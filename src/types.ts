@@ -574,7 +574,7 @@ export type ThemeId = "aerospace" | "day";
 
 export type HeroStyle = "particle" | "classic" | "smiley";
 
-export type TrayIconStyle = "badge" | "mark" | "ghost" | "buddy" | "danger" | "danger2" | "ghost2" | "faceid" | "saturn";
+export type TrayIconStyle = "badge" | "mark" | "ghost" | "buddy" | "danger" | "danger2" | "ghost2" | "faceid" | "saturn" | "saturn_classic";
 
 export interface GenerateConfigResult {
   path: string;

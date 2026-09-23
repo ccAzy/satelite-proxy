@@ -125,6 +125,8 @@ pub enum TrayIconStyle {
     Faceid,
     /// App-icon saturn tile; gray planet stopped, full color running.
     Saturn,
+    /// Pre-neon facenew saturn tile (v1.0.40); manual PNGs, kept alongside Saturn.
+    SaturnClassic,
 }
 
 impl TrayIconStyle {
@@ -139,6 +141,7 @@ impl TrayIconStyle {
             Self::Ghost2 => "ghost2",
             Self::Faceid => "faceid",
             Self::Saturn => "saturn",
+            Self::SaturnClassic => "saturn_classic",
         }
     }
 
@@ -153,6 +156,7 @@ impl TrayIconStyle {
             "ghost2" => Some(Self::Ghost2),
             "faceid" | "face" | "smile" => Some(Self::Faceid),
             "saturn" | "planet" | "app" => Some(Self::Saturn),
+            "saturn_classic" | "saturn-classic" | "facenew" => Some(Self::SaturnClassic),
             _ => None,
         }
     }

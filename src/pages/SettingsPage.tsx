@@ -1486,9 +1486,6 @@ export function SettingsPage() {
               <div className="settings-app-row settings-app-pref settings-tray-icon-row settings-duo-col">
                 <div className="settings-app-text">
                   <div className="settings-app-title">{t("settings.trayIcon")}</div>
-                  <div className="settings-app-desc muted">
-                    {t("settings.trayIconDesc")}
-                  </div>
                 </div>
                 <TrayIconPicker
                   value={settings?.tray_icon}

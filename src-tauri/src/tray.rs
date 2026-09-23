@@ -361,6 +361,12 @@ fn tray_png(style: TrayIconStyle, running: bool) -> (&'static [u8], bool) {
         (TrayIconStyle::Faceid, false) => (include_bytes!("../icons/tray/faceid-off.png"), true),
         (TrayIconStyle::Saturn, true) => (include_bytes!("../icons/tray/saturn-on.png"), false),
         (TrayIconStyle::Saturn, false) => (include_bytes!("../icons/tray/saturn-off.png"), false),
+        (TrayIconStyle::SaturnClassic, true) => {
+            (include_bytes!("../icons/tray/saturn-classic-on.png"), false)
+        }
+        (TrayIconStyle::SaturnClassic, false) => {
+            (include_bytes!("../icons/tray/saturn-classic-off.png"), false)
+        }
     }
 }
 
