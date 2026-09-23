@@ -2660,6 +2660,19 @@ button.node-card:disabled,
   min-width: 0;
 }
 
+/* Secondary capability chips next to the protocol tag (reality / tls / ws…).
+   Lighter than the sidecar tag: attached info, not an egress-path callout. */
+.node-proto-feat {
+  font-family: var(--mono);
+  font-size: 0.72em;
+  padding: 0.05rem 0.28rem;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--muted);
+  margin-left: 0.25rem;
+  white-space: nowrap;
+}
+
 .node-card-footer {
   margin-top: auto;
   display: flex;

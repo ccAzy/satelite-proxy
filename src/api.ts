@@ -12,6 +12,7 @@ import type {
   LatencyBatchResult,
   LatencyResult,
   ConnectionView,
+  ManualNodeDraft,
   NodeLatencyChange,
   NodePool,
   PoolMode,
@@ -197,6 +198,17 @@ export function listCustomConfigNodes() {
 
 export function renameNode(id: string, name: string) {
   return invoke<ProxyNode>("rename_node", { id, name });
+}
+
+/** Prefill the node-edit form (stored node → flat manual draft). */
+export function getNodeDraft(id: string) {
+  return invoke<ManualNodeDraft>("get_node_draft", { id });
+}
+
+/** Save parameter edits for one stored node. Edits are overwritten by the
+ *  next subscription refresh — see the edit modal's warning. */
+export function updateNode(id: string, draft: ManualNodeDraft) {
+  return invoke<ProxyNode>("update_node", { id, draft });
 }
 
 /** Toggle a node's favorite flag. Returns the new state. */

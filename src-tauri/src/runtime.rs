@@ -459,7 +459,7 @@ impl Runtime {
                     .subscriptions
                     .iter()
                     .find(|s| s.id == id)
-                    .map(|s| s.name.clone())
+                    .map(|s| s.display_name())
             }),
             custom_has_clash_api: self.custom_has_clash_api,
             custom_has_tun: self.custom_has_tun,
@@ -2433,11 +2433,11 @@ fn node_tag_info_map(store: &AppStore) -> HashMap<String, NodeInfo> {
         .filter(|s| s.enabled)
         .map(|s| s.id.as_str())
         .collect();
-    // subscription id → name
-    let sub_name: HashMap<&str, &str> = store
+    // subscription id → display name (with id suffix)
+    let sub_name: HashMap<&str, String> = store
         .subscriptions
         .iter()
-        .map(|s| (s.id.as_str(), s.name.as_str()))
+        .map(|s| (s.id.as_str(), s.display_name()))
         .collect();
     store
         .nodes
@@ -2448,7 +2448,7 @@ fn node_tag_info_map(store: &AppStore) -> HashMap<String, NodeInfo> {
                 name: n.node.name.clone(),
                 subscription: sub_name
                     .get(n.subscription_id.as_str())
-                    .map(|s| s.to_string())
+                    .cloned()
                     .unwrap_or_default(),
             };
             (outbound_tag(&n.node), info)

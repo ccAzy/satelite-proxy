@@ -808,9 +808,61 @@ mod tests {
         let after_rename = build("HK-01-renamed", "https://sub.example.com/a");
         assert_eq!(before.nodes[0].id, after_rename.nodes[0].id);
 
-        // Same node, subscription re-added under a different URL.
+        // Same node, subscription re-added under a different URL. Node ids
+        // are subscription-scoped now (same URL may be subscribed twice;
+        // twin backends must stay independently addressable), so a genuinely
+        // different subscription gets different ids. The URL-rotation case
+        // keeps ids via the edit/refresh paths, which pass the existing
+        // subscription id through.
         let after_resub = build("HK-01", "https://sub.example.com/b");
-        assert_eq!(before.nodes[0].id, after_resub.nodes[0].id);
+        assert_ne!(before.nodes[0].id, after_resub.nodes[0].id);
+        // …while a refresh of the SAME subscription (same id, different
+        // display name) keeps the id, which is what pins rely on.
+        let same_sub = build_outcome(
+            "airport".into(),
+            SubscriptionSource::Url {
+                url: "https://sub.example.com/a".into(),
+            },
+            ParseResult {
+                nodes: vec![mk("HK-01-renamed-again")],
+                skipped: vec![],
+                format: SubscriptionFormat::UriList,
+            },
+            Some(before.subscription.id.clone()),
+            false,
+        );
+        assert_eq!(before.nodes[0].id, same_sub.nodes[0].id);
+    }
+
+    #[test]
+    fn unique_subscription_id_salts_only_on_collision() {
+        let source = SubscriptionSource::Url {
+            url: "https://sub.example.com/a".into(),
+        };
+        let mut store = crate::storage::AppStore::default();
+        let base = subscription_id(&source);
+        assert_eq!(unique_subscription_id(&store, base.clone()), base);
+
+        store.subscriptions.push(Subscription {
+            id: base.clone(),
+            name: "first".into(),
+            source: SubscriptionSource::Url {
+                url: "https://sub.example.com/a".into(),
+            },
+            last_update: 0,
+            node_count: 0,
+            enabled: true,
+            format: None,
+            skipped_count: 0,
+            via_proxy: false,
+            auto_update: false,
+            auto_update_interval_min: 1440,
+            traffic: None,
+            user_agent: None,
+        });
+        let second = unique_subscription_id(&store, subscription_id(&source));
+        assert_ne!(second, base);
+        assert_eq!(second.len(), 32);
     }
 
     #[test]
@@ -1167,7 +1219,7 @@ fn build_outcome(
     let real_nodes = dedupe_nodes(real_nodes);
     let node_count = real_nodes.len() as u32;
     let subscription = Subscription {
-        id,
+        id: id.clone(),
         name,
         source,
         last_update: now_secs(),
@@ -1182,15 +1234,17 @@ fn build_outcome(
         user_agent: None,
     };
 
-    // Re-hash node ids on backend identity (server/port/protocol/credentials)
-    // so a subscription refresh that only renames the airport/node, or
-    // rotates the subscription URL, doesn't rotate the node's id — manual
+    // Re-hash node ids on the subscription id + backend identity
+    // (server/port/protocol/credentials) so a subscription refresh that only
+    // renames the airport/node doesn't rotate the node's id — manual
     // selections and rule bindings survive across refreshes as long as the
-    // underlying host/port/auth stay the same.
+    // underlying host/port/auth stay the same. The subscription scope keeps
+    // twin copies of one backend (the same URL subscribed twice) from
+    // colliding on a single id.
     let mut nodes: Vec<ProxyNode> = real_nodes
         .into_iter()
         .map(|mut n| {
-            n = n.with_computed_id();
+            n = n.with_scoped_id(&id);
             // latency filled later by probe; clear on fresh parse
             n.latency_ms = None;
             n.latency_at = None;
@@ -1229,7 +1283,7 @@ fn dedupe_nodes(nodes: Vec<ProxyNode>) -> Vec<ProxyNode> {
     out
 }
 
-fn subscription_id(source: &SubscriptionSource) -> String {
+pub(crate) fn subscription_id(source: &SubscriptionSource) -> String {
     let mut hasher = Sha256::new();
     match source {
         SubscriptionSource::Url { url } => {
@@ -1268,6 +1322,37 @@ fn subscription_id(source: &SubscriptionSource) -> String {
     }
     let digest = hasher.finalize();
     hex::encode(&digest[..16])
+}
+
+/// Same-URL subscriptions are allowed (each refreshes on its own schedule),
+/// so ids derived from the source alone may collide with an existing
+/// subscription — and `upsert_subscription` would then overwrite it. Return
+/// the desired id when free, otherwise re-hash with entropy until unique.
+/// Existing subscriptions keep their historical ids untouched.
+pub(crate) fn unique_subscription_id(store: &crate::storage::AppStore, desired: String) -> String {
+    let taken = |id: &str| store.subscriptions.iter().any(|s| &s.id == id);
+    if !taken(&desired) {
+        return desired;
+    }
+    loop {
+        let mut hasher = Sha256::new();
+        hasher.update(b"dup|");
+        hasher.update(desired.as_bytes());
+        hasher.update(b"|");
+        let entropy = format!(
+            "{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        hasher.update(entropy.as_bytes());
+        let candidate = hex::encode(&hasher.finalize()[..16]);
+        if !taken(&candidate) {
+            return candidate;
+        }
+    }
 }
 
 #[cfg(test)]

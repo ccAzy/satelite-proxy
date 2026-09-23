@@ -1,9 +1,10 @@
 use crate::domain::{
     build_builtin_remote_set, builtin_remote_spec, default_rules, is_builtin_remote_id,
-    is_factory_set_id, sanitize_rules, AppSettings, DnsAction, DnsRuleSetKind, DnsSettings,
-    DomainMatcher, ProxyNode, Rule, RuleSet, RuleSetDnsStrategy, RuleSetOwnership, RuleSetStrategy,
-    RuleSetSummary, RuleTarget, RuleType, Subscription, BUILTIN_REMOTE_RULE_SETS, BUILTIN_SET_ID,
-    BUILTIN_SET_NAME, GENERAL_SET_ID, GENERAL_SET_NAME, LEGACY_BUILTIN_REMOTE_IDS,
+    is_factory_set_id, sanitize_rules, AppSettings, ChainHop, DnsAction, DnsRuleSetKind,
+    DnsSettings, DomainMatcher, PoolMode, ProxyNode, Rule, RuleSet, RuleSetDnsStrategy,
+    RuleSetOwnership, RuleSetStrategy, RuleSetSummary, RuleTarget, RuleType, Subscription,
+    BUILTIN_REMOTE_RULE_SETS, BUILTIN_SET_ID, BUILTIN_SET_NAME, GENERAL_SET_ID, GENERAL_SET_NAME,
+    LEGACY_BUILTIN_REMOTE_IDS,
 };
 use crate::error::{AppError, AppResult};
 use serde::de::DeserializeOwned;
@@ -104,6 +105,7 @@ impl AppStore {
         store.migrate_system_rule_set_ids();
         store.migrate_file_sources_to_copied_text();
         store.migrate_chain_feature();
+        store.migrate_subscription_scoped_node_ids();
         store.ensure_subscription_enable_policy();
         // Self-heal legacy stores that already contain colliding node ids
         // (same name/server/port/protocol, different credentials) — they
@@ -142,6 +144,13 @@ impl AppStore {
         }
         if schema_before < 9 && source_raw.is_some() {
             let backup = path.with_file_name("store.pre-v9.backup.json");
+            if !backup.exists() {
+                let _ = fs::write(backup, source_raw.as_deref().unwrap_or_default());
+            }
+        }
+        // v11 rewrites every node id — keep the pristine copy around.
+        if schema_before < 11 && source_raw.is_some() {
+            let backup = path.with_file_name("store.pre-v11.backup.json");
             if !backup.exists() {
                 let _ = fs::write(backup, source_raw.as_deref().unwrap_or_default());
             }
@@ -707,6 +716,104 @@ impl AppStore {
         self.schema_version = VERSION;
     }
 
+    /// v11: node ids became subscription-scoped (`ProxyNode::scoped_id`) so
+    /// the same URL can be subscribed multiple times without twin backends
+    /// colliding on one id. Recompute every stored node's id under its own
+    /// subscription and rewrite all id-keyed references; pins that can't be
+    /// resolved fall through to the existing staleness handling
+    /// (`ensure_current_node_valid`, favorite gc, edit-time validation).
+    pub fn migrate_subscription_scoped_node_ids(&mut self) {
+        const VERSION: u32 = 11;
+        if self.schema_version >= VERSION {
+            return;
+        }
+        self.schema_version = VERSION;
+        // Build old→new from the pristine ids BEFORE mutating them. A legacy
+        // store could briefly hold the same old id under two subscriptions
+        // (same backend served by two airports); first occurrence wins, the
+        // reference keeps pointing at one concrete copy.
+        let mut remap: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        for n in &self.nodes {
+            let new_id = n.node.scoped_id(&n.subscription_id);
+            if new_id != n.node.id {
+                remap.entry(n.node.id.clone()).or_insert(new_id);
+            }
+        }
+        if remap.is_empty() {
+            return;
+        }
+        let count = remap.len();
+        for n in self.nodes.iter_mut() {
+            n.node.id = n.node.scoped_id(&n.subscription_id);
+        }
+        self.remap_node_refs(&remap);
+        crate::app_log::info(
+            "storage",
+            format!("v11 迁移：{count} 个节点 id 已按订阅作用域重算，引用已随行重映射"),
+        );
+    }
+
+    /// Rewrite every persisted node-id reference through `map` (old → new).
+    /// Ids absent from the map are left untouched. Shared by the v11
+    /// scoped-id migration and single-node edits (`update_node`), whose
+    /// parameter changes rotate the node's content-hash id.
+    pub fn remap_node_refs(&mut self, map: &std::collections::HashMap<String, String>) {
+        if map.is_empty() {
+            return;
+        }
+        if let Some(new) = self
+            .settings
+            .current_node_id
+            .as_ref()
+            .and_then(|id| map.get(id))
+        {
+            self.settings.current_node_id = Some(new.clone());
+        }
+        let favorites = std::mem::take(&mut self.favorite_nodes);
+        for id in favorites {
+            let mapped = map.get(&id).cloned().unwrap_or(id);
+            self.favorite_nodes.insert(mapped);
+        }
+        for rule in self.rules.iter_mut() {
+            if let Some(new) = rule.node_id.as_ref().and_then(|id| map.get(id)) {
+                rule.node_id = Some(new.clone());
+            }
+        }
+        for set in self.rule_sets.iter_mut() {
+            if let Some(new) = set.node_id.as_ref().and_then(|id| map.get(id)) {
+                set.node_id = Some(new.clone());
+            }
+            for id in set.node_ids.iter_mut() {
+                if let Some(new) = map.get(id) {
+                    *id = new.clone();
+                }
+            }
+            for rule in set.rules.iter_mut() {
+                if let Some(new) = rule.node_id.as_ref().and_then(|id| map.get(id)) {
+                    rule.node_id = Some(new.clone());
+                }
+            }
+        }
+        for pool in self.pools.iter_mut() {
+            if let PoolMode::Explicit { node_ids } = &mut pool.mode {
+                for id in node_ids.iter_mut() {
+                    if let Some(new) = map.get(id) {
+                        *id = new.clone();
+                    }
+                }
+            }
+        }
+        for chain in self.chains.iter_mut() {
+            for hop in chain.hops.iter_mut() {
+                if let ChainHop::Node { node_id } = hop {
+                    if let Some(new) = map.get(node_id) {
+                        *node_id = new.clone();
+                    }
+                }
+            }
+        }
+    }
+
     pub fn save(&self, path: &Path) -> AppResult<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -1051,6 +1158,83 @@ impl AppStore {
         node.node.name = name.clone();
         self.node_aliases.insert(source_key, name);
         Ok(node.node.clone())
+    }
+
+    /// Replace a stored node's parameters from an edited manual draft
+    /// (节点 ⋮ 编辑). The fresh node keeps its subscription and provenance
+    /// and gets a subscription-scoped id; an identity change (server/port/
+    /// protocol/credentials) rotates the id, and every id-keyed reference
+    /// (current node, rule pins, chain hops, pools, favorites) follows via
+    /// [`AppStore::remap_node_refs`]. Edits are ephemeral by design: the
+    /// next subscription refresh rebuilds the whole node list and discards
+    /// them — the UI warns about this before saving.
+    pub fn update_node_from_draft(
+        &mut self,
+        id: &str,
+        draft: &crate::domain::ManualNodeDraft,
+    ) -> AppResult<ProxyNode> {
+        let idx = self
+            .nodes
+            .iter()
+            .position(|n| n.node.id == id)
+            .ok_or_else(|| AppError::NotFound(id.to_string()))?;
+        let old = self.nodes[idx].node.clone();
+        let sub_id = self.nodes[idx].subscription_id.clone();
+        let mut fresh = crate::subscription::draft_to_node(draft, None).map_err(|reason| {
+            AppError::InvalidProxy {
+                name: old.name.clone(),
+                reason,
+            }
+        })?;
+        // draft_to_node stamps "manual"; keep the original provenance so
+        // subscription-imported nodes don't relabel as hand-typed.
+        fresh.source = old.source.clone();
+        // The flat draft cannot express XHTTP mode/extra tunables — the edit
+        // form has no fields for them, so carry the originals over instead
+        // of silently dropping them.
+        use crate::domain::Transport;
+        if let Some(Transport::Xhttp {
+            mode: old_mode,
+            extra: old_extra,
+            ..
+        }) = &old.transport
+        {
+            if let Some(Transport::Xhttp { mode, extra, .. }) = fresh.transport.as_mut() {
+                if mode.is_none() {
+                    *mode = old_mode.clone();
+                }
+                if extra.is_none() {
+                    *extra = old_extra.clone();
+                }
+            }
+        }
+        fresh = fresh.with_scoped_id(&sub_id);
+        let keep_latency = fresh.id == old.id;
+        if keep_latency {
+            fresh.latency_ms = old.latency_ms;
+            fresh.latency_at = old.latency_at;
+        }
+        self.nodes[idx].node = fresh;
+        self.nodes[idx].latency_method = if keep_latency {
+            self.nodes[idx].latency_method.clone()
+        } else {
+            None
+        };
+        // An identity edit may now collide with a same-subscription sibling
+        // (same backend listed twice); re-salt deterministically.
+        let _ = ProxyNode::ensure_unique_ids(
+            self.nodes
+                .iter_mut()
+                .filter(|n| n.subscription_id == sub_id)
+                .map(|n| &mut n.node),
+        );
+        let new_id = self.nodes[idx].node.id.clone();
+        if new_id != old.id {
+            let mut map = std::collections::HashMap::new();
+            map.insert(old.id.clone(), new_id);
+            self.remap_node_refs(&map);
+        }
+        Ok(self.nodes[idx].node.clone())
     }
 
     /// Record a probe result under the real-vs-ping priority rule:
@@ -2658,7 +2842,7 @@ mod tests {
         store.save(&path).unwrap();
 
         let loaded = AppStore::load(&path, None).unwrap();
-        assert_eq!(loaded.schema_version, 10);
+        assert_eq!(loaded.schema_version, 11);
         let pre_v6 = path.with_file_name("store.pre-v6.backup.json");
         assert!(
             pre_v6.exists(),
@@ -2669,7 +2853,7 @@ mod tests {
         // Reloading the migrated store must not resurrect the backup logic.
         fs::remove_file(&pre_v6).unwrap();
         let again = AppStore::load(&path, None).unwrap();
-        assert_eq!(again.schema_version, 10);
+        assert_eq!(again.schema_version, 11);
         assert!(!pre_v6.exists(), "v6 store skips the backup on reload");
 
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
@@ -3277,7 +3461,7 @@ mod tests {
                 .any(|set| set.id == BUILTIN_REMOTE_RULE_SETS[0].id),
             "system set intact"
         );
-        assert_eq!(loaded.schema_version, 10);
+        assert_eq!(loaded.schema_version, 11);
 
         // Even a legacy set that still exists loses its 内置 badge.
         let mut store = AppStore {
@@ -3429,7 +3613,7 @@ mod tests {
         store.save(&path).unwrap();
 
         let loaded = AppStore::load(&path, None).unwrap();
-        assert_eq!(loaded.schema_version, 10);
+        assert_eq!(loaded.schema_version, 11);
         let pre_v7 = path.with_file_name("store.pre-v7.backup.json");
         assert!(
             pre_v7.exists(),
@@ -4147,5 +4331,223 @@ mod tests {
         assert!(err.to_string().contains("不存在的节点"));
         // Original hops must survive a rejected update.
         assert_eq!(store.chains[0].hops.len(), 2);
+    }
+
+    // ---- Subscription-scoped node ids (v11) + node editing -----------------
+
+    fn ss_node(name: &str, server: &str) -> crate::domain::ProxyNode {
+        crate::domain::ProxyNode {
+            id: String::new(),
+            name: name.into(),
+            protocol: crate::domain::Protocol::Shadowsocks,
+            server: server.into(),
+            port: 8388,
+            tls: None,
+            transport: None,
+            udp: None,
+            config: crate::domain::ProtocolConfig::Shadowsocks {
+                method: "aes-128-gcm".into(),
+                password: "pass".into(),
+                plugin: None,
+                plugin_opts: None,
+                shadow_tls: None,
+            },
+            source: None,
+            latency_ms: None,
+            latency_at: None,
+        }
+    }
+
+    fn pinned_set(id: &str, node_id: &str) -> RuleSet {
+        RuleSet {
+            id: id.into(),
+            name: id.into(),
+            builtin: false,
+            enabled: true,
+            ownership: RuleSetOwnership::User,
+            strategy: RuleSetStrategy::Node,
+            node_id: Some(node_id.into()),
+            node_name: None,
+            node_ids: Vec::new(),
+            smart_include: Vec::new(),
+            smart_exclude: Vec::new(),
+            chain_id: None,
+            chain_name: None,
+            dns_strategy: Default::default(),
+            remote: None,
+            dns_rules: Vec::new(),
+            rules: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn scoped_id_migration_rewrites_ids_and_references() {
+        let mut store = AppStore::default();
+        store.schema_version = 10;
+        store.subscriptions.push(sample_url_sub("legacy"));
+        let sub_id = store.subscriptions[0].id.clone();
+        // Pre-v11 node: id is the UNSCOPED backend-identity hash.
+        let legacy = ss_node("HK-01", "example.com").with_computed_id();
+        let old_id = legacy.id.clone();
+        store.nodes.push(StoredNode {
+            subscription_id: sub_id.clone(),
+            node: legacy,
+            latency_method: None,
+        });
+        store.settings.current_node_id = Some(old_id.clone());
+        store.favorite_nodes.insert(old_id.clone());
+        store.rule_sets.push(pinned_set("set-1", &old_id));
+
+        store.migrate_subscription_scoped_node_ids();
+        assert_eq!(store.schema_version, 11);
+        let expected = ss_node("HK-01", "example.com").scoped_id(&sub_id);
+        assert_eq!(store.nodes[0].node.id, expected);
+        assert_eq!(
+            store.settings.current_node_id.as_deref(),
+            Some(expected.as_str())
+        );
+        assert!(store.favorite_nodes.contains(&expected));
+        assert_eq!(
+            store.rule_sets[0].node_id.as_deref(),
+            Some(expected.as_str())
+        );
+
+        // Idempotent: a second pass is a schema gate no-op.
+        store.migrate_subscription_scoped_node_ids();
+        assert_eq!(store.nodes[0].node.id, expected);
+    }
+
+    #[test]
+    fn update_node_rotates_id_and_remaps_references() {
+        let mut store = AppStore::default();
+        store.subscriptions.push(sample_url_sub("edit"));
+        let sub_id = store.subscriptions[0].id.clone();
+        let node = ss_node("HK-01", "example.com").with_scoped_id(&sub_id);
+        let old_id = node.id.clone();
+        let mut stored = StoredNode {
+            subscription_id: sub_id,
+            node,
+            latency_method: Some("clash_api".to_string()),
+        };
+        stored.node.latency_ms = Some(42);
+        stored.node.latency_at = Some(1_700_000_000);
+        store.nodes.push(stored);
+        store.settings.current_node_id = Some(old_id.clone());
+        store.favorite_nodes.insert(old_id.clone());
+        store.rule_sets.push(pinned_set("set-1", &old_id));
+
+        let mut draft = crate::subscription::node_to_draft(&store.nodes[0].node);
+        draft.server = "changed.example.com".into();
+        let updated = store.update_node_from_draft(&old_id, &draft).unwrap();
+        assert_ne!(updated.id, old_id);
+        assert_eq!(
+            store.settings.current_node_id.as_deref(),
+            Some(updated.id.as_str())
+        );
+        assert!(store.favorite_nodes.contains(&updated.id));
+        assert!(!store.favorite_nodes.contains(&old_id));
+        assert_eq!(
+            store.rule_sets[0].node_id.as_deref(),
+            Some(updated.id.as_str())
+        );
+        // Latency described the old endpoint — identity change drops it.
+        let stored = store
+            .nodes
+            .iter()
+            .find(|n| n.node.id == updated.id)
+            .unwrap();
+        assert!(stored.node.latency_ms.is_none());
+        assert!(stored.latency_method.is_none());
+        // Subscription link and provenance survive the edit.
+        assert_eq!(stored.subscription_id, store.subscriptions[0].id);
+    }
+
+    #[test]
+    fn update_node_keeps_id_and_latency_on_rename_only() {
+        let mut store = AppStore::default();
+        store.subscriptions.push(sample_url_sub("rename"));
+        let sub_id = store.subscriptions[0].id.clone();
+        let node = ss_node("HK-01", "example.com").with_scoped_id(&sub_id);
+        let old_id = node.id.clone();
+        let mut stored = StoredNode {
+            subscription_id: sub_id,
+            node,
+            latency_method: Some("clash_api".to_string()),
+        };
+        stored.node.latency_ms = Some(42);
+        stored.node.latency_at = Some(1_700_000_000);
+        store.nodes.push(stored);
+
+        let mut draft = crate::subscription::node_to_draft(&store.nodes[0].node);
+        draft.name = Some("My alias".into());
+        let updated = store.update_node_from_draft(&old_id, &draft).unwrap();
+        assert_eq!(updated.id, old_id);
+        assert_eq!(updated.name, "My alias");
+        let stored = store.nodes.iter().find(|n| n.node.id == old_id).unwrap();
+        assert_eq!(stored.node.latency_ms, Some(42));
+        assert_eq!(stored.latency_method.as_deref(), Some("clash_api"));
+    }
+
+    #[test]
+    fn update_node_preserves_xhttp_tunables() {
+        use crate::domain::{Protocol, ProtocolConfig, TlsConfig, Transport};
+        let mut store = AppStore::default();
+        store.subscriptions.push(sample_url_sub("xhttp"));
+        let sub_id = store.subscriptions[0].id.clone();
+        let node = crate::domain::ProxyNode {
+            id: String::new(),
+            name: "vless-xhttp".into(),
+            protocol: Protocol::Vless,
+            server: "edge.example.com".into(),
+            port: 443,
+            tls: Some(TlsConfig {
+                enabled: true,
+                server_name: Some("edge.example.com".into()),
+                insecure: None,
+                alpn: None,
+                utls_fingerprint: None,
+                reality_public_key: None,
+                reality_short_id: None,
+            }),
+            transport: Some(Transport::Xhttp {
+                path: Some("/ray".into()),
+                host: None,
+                mode: Some("packet-up".into()),
+                extra: Some(r#"{"sc_maxEachPostBytes":1000}"#.into()),
+            }),
+            udp: None,
+            config: ProtocolConfig::Vless {
+                uuid: "u-1".into(),
+                flow: None,
+                packet_encoding: "xudp".into(),
+            },
+            source: Some("clash".into()),
+            latency_ms: None,
+            latency_at: None,
+        }
+        .with_scoped_id(&sub_id);
+        let id = node.id.clone();
+        store.nodes.push(StoredNode {
+            subscription_id: sub_id,
+            node,
+            latency_method: None,
+        });
+
+        // The edit form has no mode/extra fields — an unrelated edit must
+        // not silently drop them.
+        let mut draft = crate::subscription::node_to_draft(&store.nodes[0].node);
+        draft.name = Some("renamed".into());
+        let updated = store.update_node_from_draft(&id, &draft).unwrap();
+        assert_eq!(
+            updated.transport,
+            Some(Transport::Xhttp {
+                path: Some("/ray".into()),
+                host: None,
+                mode: Some("packet-up".into()),
+                extra: Some(r#"{"sc_maxEachPostBytes":1000}"#.into()),
+            })
+        );
+        // Unrelated edit keeps the identity (and thus the id) stable.
+        assert_eq!(updated.id, id);
     }
 }

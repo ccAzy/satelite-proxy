@@ -17,9 +17,10 @@ import {
 import { GlassButton } from "../components/GlassButton";
 import { GlassSwitch } from "../components/GlassSwitch";
 import { ErrorModal } from "../components/ErrorModal";
+import { EditNodeModal } from "../components/EditNodeModal";
 import { NodeDetailModal } from "../components/NodeDetailModal";
 import { useI18n } from "../i18n";
-import { nodeTip } from "../nodeTooltip";
+import { nodeFeatureBadges, nodeTip } from "../nodeTooltip";
 import { groupNodes, type GroupBy } from "../nodeGroups";
 import { GlassSeg } from "../components/GlassSeg";
 import { waitForCoreRestart } from "../coreBusy";
@@ -150,6 +151,9 @@ export function NodesPage() {
   // Node-detail modal: the full node object (list payloads already carry
   // protocol parameters — see ListedNode's serde-flattened ProxyNode).
   const [detailNode, setDetailNode] = useState<ProxyNode | null>(null);
+  // Parameter-edit modal (⋮ 编辑节点). Store-backed nodes only — custom
+  // runtime nodes are parsed on demand from a raw config body.
+  const [editNode, setEditNode] = useState<ProxyNode | null>(null);
 
   const [customRuntime, setCustomRuntime] = useState(false);
   // Xray has no Clash-style delay API — the "real latency" button would
@@ -738,6 +742,19 @@ export function NodesPage() {
             >
               {t("nodes.ctxDetails")}
             </button>
+            {!customRuntime && (
+              <button
+                type="button"
+                role="menuitem"
+                className="sub-menu-item"
+                onClick={() => {
+                  setMenuId(null);
+                  setEditNode(n);
+                }}
+              >
+                {t("nodes.ctxEdit")}
+              </button>
+            )}
             <button
               type="button"
               role="menuitem"
@@ -899,6 +916,11 @@ export function NodesPage() {
                           hover tooltip (protocol is already in the text). */}
                       <span className="node-proto-tags" title="">
                         <code>{n.protocol}</code>
+                        {nodeFeatureBadges(n).map((b) => (
+                          <span key={b} className="node-proto-feat">
+                            {b}
+                          </span>
+                        ))}
                         {delegatedCores.get(n.protocol) ? (
                           <span className="sidecar-tag">
                             {delegatedCores.get(n.protocol) === "xray"
@@ -954,6 +976,11 @@ export function NodesPage() {
                           tooltip (protocol is already in the text). */}
                       <div className="node-proto-tags" title="">
                         <code>{n.protocol}</code>
+                        {nodeFeatureBadges(n).map((b) => (
+                          <span key={b} className="node-proto-feat">
+                            {b}
+                          </span>
+                        ))}
                         {delegatedCores.get(n.protocol) ? (
                           <span className="sidecar-tag">
                             {delegatedCores.get(n.protocol) === "xray"
@@ -1200,6 +1227,16 @@ export function NodesPage() {
 
       {detailNode && (
         <NodeDetailModal node={detailNode} onClose={() => setDetailNode(null)} />
+      )}
+      {editNode && (
+        <EditNodeModal
+          node={editNode}
+          onClose={() => setEditNode(null)}
+          onSaved={() => {
+            setEditNode(null);
+            void reload();
+          }}
+        />
       )}
     </div>
   );

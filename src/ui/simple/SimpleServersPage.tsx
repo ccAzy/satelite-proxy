@@ -29,6 +29,7 @@ import { GlassButton } from "../../components/GlassButton";
 import { GlassSeg } from "../../components/GlassSeg";
 import { useImportIntent } from "../../ImportIntentContext";
 import { useI18n } from "../../i18n";
+import { nodeFeatureBadges } from "../../nodeTooltip";
 import { ErrorModal } from "../../components/ErrorModal";
 import { waitForCoreRestart } from "../../coreBusy";
 import { useVirtualRange } from "../../hooks/useVirtualRange";
@@ -455,6 +456,11 @@ export function SimpleServersPage() {
                     </span>
                     <span className="simple-node-proto mono">
                       {n.protocol.toUpperCase()}
+                      {nodeFeatureBadges(n).map((b) => (
+                        <span key={b} className="node-proto-feat">
+                          {b}
+                        </span>
+                      ))}
                     </span>
                     <span className="simple-node-item-name">{n.name}</span>
                     <LatencyLabel

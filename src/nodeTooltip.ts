@@ -38,3 +38,15 @@ export function nodeTip(
 ): { title: string; "data-tip-kind": string } {
   return { title: nodeHoverTitle(n, t), "data-tip-kind": "node" };
 }
+
+/** Secondary capability badges for node rows/cards — the "vless·reality"
+ *  class of attached info. TLS layer first (reality outranks plain tls),
+ *  then the transport when it isn't plain TCP. Grouping and search stay
+ *  keyed on the main protocol only; these are display-only. */
+export function nodeFeatureBadges(n: ProxyNode): string[] {
+  const badges: string[] = [];
+  if (n.tls?.reality_public_key) badges.push("reality");
+  else if (n.tls?.enabled) badges.push("tls");
+  if (n.transport && n.transport.type !== "tcp") badges.push(n.transport.type);
+  return badges;
+}

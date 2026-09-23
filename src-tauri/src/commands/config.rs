@@ -462,14 +462,58 @@ pub fn toggle_favorite_node(state: State<'_, AppState>, id: String) -> Result<bo
         .map_err(|e| e.to_string())
 }
 
+/// Prefill the node-edit form: stored node → flat manual draft. The draft
+/// round-trip is slightly lossy (XHTTP mode/extra have no form fields);
+/// `update_node` carries those over from the stored node on save.
+#[tauri::command(async)]
+pub fn get_node_draft(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<crate::domain::ManualNodeDraft, String> {
+    state
+        .with_store(|store| {
+            store
+                .nodes
+                .iter()
+                .find(|n| n.node.id == id)
+                .map(|n| crate::subscription::node_to_draft(&n.node))
+                .ok_or_else(|| AppError::NotFound(id.clone()))
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// Save parameter edits for one stored node. Edits are ephemeral — the next
+/// subscription refresh overwrites them (the UI warns before saving). An
+/// identity change rotates the node id; id-keyed references follow, and a
+/// changed enabled node set queues the usual debounced core rebuild.
+#[tauri::command(async)]
+pub fn update_node(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    draft: crate::domain::ManualNodeDraft,
+) -> Result<ProxyNode, String> {
+    let (node, node_set_changed) = state
+        .with_store_mut(|store| {
+            let ids_before = store.enabled_node_ids_sorted();
+            let node = store.update_node_from_draft(&id, &draft)?;
+            Ok((node, ids_before != store.enabled_node_ids_sorted()))
+        })
+        .map_err(|e| e.to_string())?;
+    if node_set_changed {
+        crate::rule_apply::request_restart(app, Vec::new());
+    }
+    Ok(node)
+}
+
 #[tauri::command(async)]
 pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, String> {
     state
         .with_store(|store| {
-            let names: HashMap<&str, &str> = store
+            let names: HashMap<&str, String> = store
                 .subscriptions
                 .iter()
-                .map(|s| (s.id.as_str(), s.name.as_str()))
+                .map(|s| (s.id.as_str(), s.display_name()))
                 .collect();
             let enabled: std::collections::HashSet<&str> = store
                 .subscriptions
@@ -491,9 +535,8 @@ pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, Str
                     subscription_id: n.subscription_id.clone(),
                     subscription_name: names
                         .get(n.subscription_id.as_str())
-                        .copied()
-                        .unwrap_or("")
-                        .to_string(),
+                        .cloned()
+                        .unwrap_or_default(),
                     favorite: store.favorite_nodes.contains(&n.node.id),
                 })
                 .collect())
@@ -531,10 +574,10 @@ pub fn list_nodes_page(
 ) -> Result<NodePage, String> {
     state
         .with_store(|store| {
-            let names: HashMap<&str, &str> = store
+            let names: HashMap<&str, String> = store
                 .subscriptions
                 .iter()
-                .map(|s| (s.id.as_str(), s.name.as_str()))
+                .map(|s| (s.id.as_str(), s.display_name()))
                 .collect();
             let enabled: std::collections::HashSet<&str> = store
                 .subscriptions
@@ -565,9 +608,8 @@ pub fn list_nodes_page(
                     subscription_id: n.subscription_id.clone(),
                     subscription_name: names
                         .get(n.subscription_id.as_str())
-                        .copied()
-                        .unwrap_or("")
-                        .to_string(),
+                        .cloned()
+                        .unwrap_or_default(),
                     favorite: store.favorite_nodes.contains(&n.node.id),
                 })
                 .collect();
@@ -596,10 +638,10 @@ pub fn list_node_ids(
 ) -> Result<Vec<String>, String> {
     state
         .with_store(|store| {
-            let names: HashMap<&str, &str> = store
+            let names: HashMap<&str, String> = store
                 .subscriptions
                 .iter()
-                .map(|s| (s.id.as_str(), s.name.as_str()))
+                .map(|s| (s.id.as_str(), s.display_name()))
                 .collect();
             let enabled: std::collections::HashSet<&str> = store
                 .subscriptions
@@ -630,9 +672,8 @@ pub fn list_node_ids(
                     subscription_id: n.subscription_id.clone(),
                     subscription_name: names
                         .get(n.subscription_id.as_str())
-                        .copied()
-                        .unwrap_or("")
-                        .to_string(),
+                        .cloned()
+                        .unwrap_or_default(),
                     favorite: store.favorite_nodes.contains(&n.node.id),
                 })
                 .collect();
@@ -710,7 +751,7 @@ pub(crate) fn custom_config_nodes(state: &AppState) -> Result<Vec<ListedNode>, S
                     .find(|s| s.id == id)
                     .and_then(|s| match &s.source {
                         SubscriptionSource::Singbox { content } => {
-                            Some((s.id.clone(), s.name.clone(), content.clone()))
+                            Some((s.id.clone(), s.display_name(), content.clone()))
                         }
                         _ => None,
                     }),
