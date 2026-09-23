@@ -31,7 +31,7 @@ import struct
 from io import BytesIO
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "src-tauri" / "icons"
@@ -107,12 +107,37 @@ def make_mac_icon(size: int) -> Image.Image:
     return im
 
 
+def _ico_entry(size: int) -> Image.Image:
+    """One .ico entry, tuned for Windows title-bar legibility (2026-09).
+
+    Entries <=48px are single-step LANCZOS downscales from the 1024 source
+    with a mild unsharp pass on RGB only (alpha keeps its clean AA) and,
+    for <=32px, a slight midtone lift — the neon artwork is a dark planet
+    on a dark tile with soft glow and reads as mush when merely resampled
+    at 16-24px. Bigger entries keep the plain make_app_icon pipeline.
+    """
+    if size > 48:
+        return make_app_icon(size)
+    im = app_icon_source().resize((size, size), Image.Resampling.LANCZOS)
+    r, g, b, a = im.split()
+    rgb = Image.merge("RGB", (r, g, b))
+    if size <= 32:
+        rgb = rgb.filter(ImageFilter.UnsharpMask(radius=1.4, percent=100, threshold=2))
+        rgb = rgb.point(lambda v: int(255 * (v / 255) ** 0.88))
+    else:
+        rgb = rgb.filter(ImageFilter.UnsharpMask(radius=1.2, percent=80, threshold=2))
+    return Image.merge("RGBA", (*rgb.split(), a))
+
+
 def write_ico(path: Path) -> None:
-    sizes = [16, 24, 32, 48, 64, 128, 256]
+    # 20/28px exist because 125%/175% DPI title bars ask for exactly those
+    # sizes — without them Windows rescales a neighboring entry and the
+    # title-bar icon looks blurry.
+    sizes = [16, 20, 24, 28, 32, 48, 64, 128, 256]
     entries, blobs = [], []
     for s in sizes:
         buf = BytesIO()
-        make_app_icon(s).save(buf, format="PNG")
+        _ico_entry(s).save(buf, format="PNG")
         data = buf.getvalue()
         entries.append((s, len(data)))
         blobs.append(data)

@@ -388,6 +388,15 @@ def write_tray_icons() -> None:
         _save_png(draw_tray_badge(size, TRAY_STOPPED), OUT / white)
         _save_png(draw_tray_badge(size, TRAY_STOPPED), OUT / black)
 
+    # Windows title-bar icon set (consumed by src-tauri/src/window_icon.rs via
+    # include_bytes!): the neon app icon reads as mush at 16-24px, so the
+    # title bar swaps in dedicated per-DPI badge renders — CreateIcon'd at
+    # native size, no GDI rescale. Mint mark = the running-state artwork the
+    # design was picked from (tray-icon-running.png). saturn-classic-* are
+    # manual archived PNGs (pre-neon facenew saturn) — never overwritten.
+    for size in (16, 20, 24, 28, 32, 40, 48):
+        _save_png(draw_tray_badge(size, TRAY_RUNNING), TRAY_DIR / f"titlebar-{size}.png")
+
 
 def main() -> None:
     write_tray_icons()

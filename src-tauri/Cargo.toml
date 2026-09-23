@@ -48,13 +48,17 @@ libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # Same windows crate tauri already depends on (version-unified, no extra copy);
-# adds the NT process-table query used by core::memory's RSS probe.
+# adds the NT process-table query used by core::memory's RSS probe and the
+# icon-group loader in window_icon.rs.
 windows = { version = "0.61", features = [
     "Wdk_System_SystemInformation",
     "Win32_System_WindowsProgramming",
     "Win32_System_Registry",
     "Win32_System_DataExchange",
     "Win32_System_Memory",
+    "Win32_System_LibraryLoader",
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
 ] }
