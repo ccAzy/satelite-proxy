@@ -25,6 +25,7 @@ mod subscription_auto;
 mod tray;
 mod url_scheme;
 mod window_ctrl;
+mod window_icon;
 
 use state::AppState;
 use tauri::{Emitter, Manager};
@@ -132,6 +133,12 @@ pub fn run() {
             // silent-start hide and everything that expects the "main" window.
             if portable::is_portable() {
                 portable::build_main_window(app);
+            }
+            // The startup window ships tao's single-frame icon (mushy once
+            // GDI downscales it for the title bar); swap in per-DPI entries
+            // from the exe's icon resource group (see window_icon.rs).
+            for window in app.webview_windows().values() {
+                window_icon::apply_to(window);
             }
             let dir = match portable::resolve_app_data_dir(app.handle()) {
                 Ok(dir) => dir,
@@ -392,6 +399,14 @@ pub fn run() {
                     if let Some(state) = window.app_handle().try_state::<AppState>() {
                         state.set_ui_visible(true);
                     }
+                    // Title-bar icon size can settle after setup (DPI picked
+                    // up late); memoized no-op once correct.
+                    window_icon::apply_to_window(window);
+                }
+                // Title-bar icon size follows the new monitor's DPI.
+                #[cfg(windows)]
+                tauri::WindowEvent::ScaleFactorChanged { .. } => {
+                    window_icon::apply_to_window(window);
                 }
                 _ => {}
             }

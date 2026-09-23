@@ -372,6 +372,8 @@ pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
         match builder.build() {
             Ok(win) => {
                 apply_titlebar_accent(app);
+                // Recreated window ships tao's single-frame icon again.
+                crate::window_icon::apply_to(&win);
                 let _ = win.show();
                 let _ = win.unminimize();
                 let _ = win.set_focus();
