@@ -103,7 +103,9 @@ function LatencyDisplay({
   }
   if (unsupported) {
     const label = unsupportedLabel ?? t("nodes.latencyNeedsCore");
-    return <span className="lat lat-none" title={label}>{label}</span>;
+    // No title here (text is its own explanation) — hovering the latency
+    // cell falls through to the row/card node hover card.
+    return <span className="lat lat-none">{label}</span>;
   }
   if (ms != null && ms >= 0) {
     return (
@@ -906,15 +908,16 @@ export function NodesPage() {
                     <span>
                       <div className="node-list-name">{n.name}</div>
                       {n.subscription_name ? (
-                        <div className="node-sub-label" title="">
+                        <div className="node-sub-label">
                           {n.subscription_name}
                         </div>
                       ) : null}
                     </span>
                     <span>
-                      {/* Empty title on this cell opts it out of the row's
-                          hover tooltip (protocol is already in the text). */}
-                      <span className="node-proto-tags" title="">
+                      {/* No title anywhere inside the row: the whole row is
+                          covered by the single node hover card on the row
+                          root (see nodeHoverTitle). */}
+                      <span className="node-proto-tags">
                         <code>{n.protocol}</code>
                         {nodeFeatureBadges(n).map((b) => (
                           <span key={b} className="node-proto-feat">
@@ -972,9 +975,10 @@ export function NodesPage() {
                   <div className="node-card-top">
                     <span className="node-dot">{active ? "●" : "○"}</span>
                     <div className="node-card-meta">
-                      {/* Empty title opts this label out of the card's hover
-                          tooltip (protocol is already in the text). */}
-                      <div className="node-proto-tags" title="">
+                      {/* No title anywhere inside the card: the whole card is
+                          covered by the single node hover card on the card
+                          root (see nodeHoverTitle). */}
+                      <div className="node-proto-tags">
                         <code>{n.protocol}</code>
                         {nodeFeatureBadges(n).map((b) => (
                           <span key={b} className="node-proto-feat">
@@ -1008,11 +1012,9 @@ export function NodesPage() {
                       </div>
                     )}
                   </div>
-                  <div className="node-card-name" {...nodeTip(n, t)}>
-                    {n.name}
-                  </div>
+                  <div className="node-card-name">{n.name}</div>
                   <div className="node-card-footer">
-                    <span className="node-sub-label" title="">
+                    <span className="node-sub-label">
                       {n.subscription_name}
                     </span>
                     <span className="node-card-latency">

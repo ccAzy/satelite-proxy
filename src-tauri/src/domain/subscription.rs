@@ -342,16 +342,6 @@ pub struct SubscriptionDetail {
 }
 
 impl Subscription {
-    /// User-facing name with the subscription's short id appended, e.g.
-    /// `机场(id:a1b2)`. The same URL may be subscribed multiple times and
-    /// auto-derived names would be identical — the id suffix is how the user
-    /// tells the copies apart. Derived on read; the stored `name` stays
-    /// clean so edit forms round-trip without baking the suffix in.
-    pub fn display_name(&self) -> String {
-        let tail: String = self.id.chars().rev().take(4).collect();
-        format!("{}(id:{})", self.name, tail.to_lowercase())
-    }
-
     pub fn to_view(&self) -> SubscriptionView {
         let (source_kind, source_display) = match &self.source {
             SubscriptionSource::Url { url } => ("url".into(), mask_url_for_display(url)),
@@ -378,7 +368,10 @@ impl Subscription {
         };
         SubscriptionView {
             id: self.id.clone(),
-            name: self.display_name(),
+            // Clean name only — the UI shows the id on hover / in group
+            // headers via the separate `id` field (same-URL copies are told
+            // apart there, not by baking a suffix into every label).
+            name: self.name.clone(),
             source_kind,
             source_display,
             last_update: self.last_update,

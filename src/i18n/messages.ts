@@ -340,8 +340,15 @@ const en = {
   "settings.coreHintMihomo":
     "mihomo is the canonical Clash Meta kernel: full protocol coverage (incl. REALITY/Vision/TUIC/WireGuard) with hot node switching. Switching the active core restarts it.",
   "settings.coreUse": "Use this core",
-  "settings.tabMultiCore": "Multi-Core",
+  "settings.tabMultiCore": "Cores",
   "settings.hintMultiCore": "Route node protocols to different cores",
+  "settings.tlsFragment": "TLS fragmentation",
+  "settings.tlsFragmentDesc":
+    "Split the TLS ClientHello into multiple TCP segments so SNI-based DPI cannot read it. Client-side only — no server changes needed.",
+  "settings.tlsFragmentSingbox": "Enable under sing-box core",
+  "settings.tlsFragmentXray": "Enable under Xray core",
+  "settings.tlsFragmentHint":
+    "Each switch only takes effect while running under its core; toggling restarts a running core. mihomo's kernel has no TLS-fragmentation support.",
   "settings.multiCore": "Multi-core mode",
   "settings.multiCoreRunning": "sidecar running",
   "settings.multiCoreIdle": "not running",
@@ -1451,8 +1458,15 @@ const zh: Record<MessageKey, string> = {
   "settings.coreHintMihomo":
     "mihomo 为标准 Clash Meta 内核：协议全覆盖（含 REALITY/Vision/TUIC/WireGuard），支持节点热切换。切换内核会重启。",
   "settings.coreUse": "启用该内核",
-  "settings.tabMultiCore": "多核模式",
+  "settings.tabMultiCore": "内核设置",
   "settings.hintMultiCore": "按协议把节点交给不同内核转发",
+  "settings.tlsFragment": "TLS 分片",
+  "settings.tlsFragmentDesc":
+    "把 TLS ClientHello 拆成多个小 TCP 段，规避按 SNI 的深度包检测。纯客户端行为，无需服务端改动。",
+  "settings.tlsFragmentSingbox": "sing-box 内核下启用",
+  "settings.tlsFragmentXray": "Xray 内核下启用",
+  "settings.tlsFragmentHint":
+    "开关仅在对应内核模式下生效，切换会重启运行中的内核；mihomo 内核不支持 TLS 分片。",
   "settings.multiCore": "多核模式",
   "settings.multiCoreRunning": "副进程运行中",
   "settings.multiCoreIdle": "未运行",

@@ -79,6 +79,13 @@ pub struct BuildOptions {
     /// Nodes routed through the companion Xray sidecar process (loopback
     /// socks outbounds). `None`/empty = fully native config (default).
     pub sidecar: Option<SidecarPlan>,
+    /// TLS ClientHello fragmentation: sing-box generator sets `tls.fragment`
+    /// on TLS-bearing node outbounds (settings `tls_fragment_singbox`).
+    pub tls_fragment_singbox: bool,
+    /// Same feature, Xray generator: freedom `fragment` outbound (tlshello)
+    /// + `sockopt.dialerProxy` on TLS-bearing nodes (settings
+    /// `tls_fragment_xray`).
+    pub tls_fragment_xray: bool,
 }
 
 impl BuildOptions {
@@ -146,6 +153,34 @@ impl SidecarPlan {
             }
         }
         kinds
+    }
+}
+
+/// Whether the TUN sidecar loop-guard rules must be emitted (see the
+/// injection site in [`build_singbox_config`]). Only meaningful with TUN:
+/// under system-proxy mode the sidecar's own egress never transits
+/// sing-box, and a process rule would be inert (process info is only
+/// resolvable for TUN-captured connections).
+fn tun_sidecar_guard_needed(opts: &BuildOptions) -> bool {
+    opts.tun_enabled
+        && opts
+            .sidecar
+            .as_ref()
+            .is_some_and(|plan| !plan.ports.is_empty())
+}
+
+/// Process-name variants a sidecar core's binary matches in a sing-box
+/// `process_name` rule: the match is an exact, case-sensitive map lookup on
+/// `filepath.Base(executable_path)`, and the staged binary name differs per
+/// platform (`xray.exe` on Windows, `xray` elsewhere — `CoreKind::binary_name`).
+/// Emitting both keeps the generated config platform-agnostic; the non-native
+/// variant simply never matches. Case-sensitivity is harmless here because
+/// the app stages and spawns these binaries itself with lowercase names.
+fn sidecar_process_names(kind: crate::core::CoreKind) -> &'static [&'static str] {
+    match kind {
+        crate::core::CoreKind::Xray => &["xray", "xray.exe"],
+        crate::core::CoreKind::Mihomo => &["mihomo", "mihomo.exe"],
+        crate::core::CoreKind::SingBox => &["sing-box", "sing-box.exe"],
     }
 }
 
@@ -308,6 +343,22 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
     outbounds.push(json!({ "type": "direct", "tag": "direct" }));
     outbounds.push(json!({ "type": "block", "tag": "block" }));
 
+    // TLS ClientHello fragmentation (settings `tls_fragment_singbox`): the
+    // dial field lives inside the outbound `tls` object in sing-box
+    // (`tls.fragment`, verified against v1.13.18 `check`). Only TLS-bearing
+    // outbounds qualify — selectors/urltest/direct/block/loopback sidecar
+    // socks have no `tls` and are skipped naturally. Chain-hop clones carry
+    // their node's TLS too, so the post-pass covers both.
+    if opts.tls_fragment_singbox {
+        for outbound in outbounds.iter_mut() {
+            if let Some(tls) = outbound.get_mut("tls") {
+                if tls.get("enabled") == Some(&json!(true)) {
+                    tls["fragment"] = json!(true);
+                }
+            }
+        }
+    }
+
     // Clash-style modes:
     // - Rule: user rules + configurable final (proxy|direct|block)
     // - Global: no user rules, final proxy
@@ -332,6 +383,66 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
     let mut route_rules = Vec::new();
     // Sniff helps domain-based route / DNS on mixed + TUN
     route_rules.push(json!({ "action": "sniff" }));
+    if tun_sidecar_guard_needed(opts) {
+        // Loop guard for sidecar self-egress under TUN (multi-core mode):
+        // the Xray/mihomo sidecars dial their nodes' real servers with
+        // ordinary sockets, which auto_route captures right back into
+        // tun-in — and routing sends that traffic through the very node
+        // delegated to the sidecar, looping forever. sing-box's own egress
+        // escapes via route.auto_detect_interface, but that protection is
+        // per-process and covers only sing-box, so connections owned by a
+        // sidecar binary must be sent direct here.
+        //
+        // Placement matters: this must precede hijack-dns / block-quic /
+        // user rules. Sidecar DNS (UDP:53 to the system resolver) routed
+        // direct also avoids the circular "resolve the node domain via
+        // remote DoH through the proxy that needs that domain" dependency,
+        // and QUIC-based delegated protocols (hysteria2/tuic via mihomo)
+        // must not trip block-quic.
+        let plan = opts.sidecar.as_ref().expect("guard check passed");
+        let mut process_names: Vec<&str> = Vec::new();
+        for kind in plan.used_kinds() {
+            for name in sidecar_process_names(kind) {
+                if !process_names.contains(name) {
+                    process_names.push(name);
+                }
+            }
+        }
+        route_rules.push(json!({
+            "process_name": process_names,
+            "action": "route",
+            "outbound": "direct"
+        }));
+        // Fallback for process lookup being unavailable (e.g. a future
+        // macOS kernel ABI change breaking sing-box's searcher): delegated
+        // nodes with IP-literal servers also match by destination. sing-box
+        // rules can't be scoped to "only the sidecar's connections", so
+        // this also sends any other captured traffic to those IPs direct —
+        // acceptable for dedicated server IPs; domain-based (CDN) servers
+        // rely on the process rule alone.
+        let mut server_ips: Vec<String> = Vec::new();
+        for entry in &plan.ports {
+            let Some(node) = nodes.iter().find(|n| n.id == entry.node_id) else {
+                continue;
+            };
+            if let Ok(ip) = node.server.parse::<std::net::IpAddr>() {
+                let cidr = match ip {
+                    std::net::IpAddr::V4(_) => format!("{ip}/32"),
+                    std::net::IpAddr::V6(_) => format!("{ip}/128"),
+                };
+                if !server_ips.contains(&cidr) {
+                    server_ips.push(cidr);
+                }
+            }
+        }
+        if !server_ips.is_empty() {
+            route_rules.push(json!({
+                "ip_cidr": server_ips,
+                "action": "route",
+                "outbound": "direct"
+            }));
+        }
+    }
     if has_diag {
         // Diagnostics traffic wins over every user rule: the diag inbound is
         // app-owned and its whole purpose is per-selector egress, regardless
@@ -2133,6 +2244,8 @@ mod tests {
             bypass_lan: false,
             tun_interface_name: None,
             sidecar: None,
+            tls_fragment_singbox: false,
+            tls_fragment_xray: false,
         };
 
         // Both outbounds.
@@ -2259,6 +2372,8 @@ mod tests {
                 bypass_lan: false,
                 tun_interface_name: None,
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -2976,6 +3091,8 @@ mod tests {
                 bypass_lan: false,
                 tun_interface_name: None,
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -3092,6 +3209,8 @@ mod tests {
                 bypass_lan: false,
                 tun_interface_name: None,
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -3138,6 +3257,8 @@ mod tests {
             bypass_lan: false,
             tun_interface_name: None,
             sidecar: None,
+            tls_fragment_singbox: false,
+            tls_fragment_xray: false,
         };
 
         let localhost = build_singbox_config(&nodes, &base()).unwrap();
@@ -3190,6 +3311,8 @@ mod tests {
                 bypass_lan: false,
                 tun_interface_name: None,
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -3256,6 +3379,8 @@ mod tests {
                 bypass_lan: false,
                 tun_interface_name: None,
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -3299,6 +3424,8 @@ mod tests {
                 bypass_lan: false,
                 tun_interface_name: None,
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -3347,6 +3474,8 @@ mod tests {
                 bypass_lan: false,
                 tun_interface_name: None,
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -3414,6 +3543,8 @@ mod tests {
             bypass_lan: false,
             tun_interface_name: None,
             sidecar: None,
+            tls_fragment_singbox: false,
+            tls_fragment_xray: false,
         };
 
         let v4_only = build_singbox_config(&nodes, &base(false)).unwrap();
@@ -3462,6 +3593,8 @@ mod tests {
                 bypass_lan: false,
                 tun_interface_name: None,
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -3500,6 +3633,8 @@ mod tests {
             bypass_lan: false,
             tun_interface_name: None,
             sidecar: None,
+            tls_fragment_singbox: false,
+            tls_fragment_xray: false,
         };
 
         let off = build_singbox_config(&nodes, &base(false)).unwrap();
@@ -3568,6 +3703,8 @@ mod tests {
             bypass_lan,
             tun_interface_name: None,
             sidecar: None,
+            tls_fragment_singbox: false,
+            tls_fragment_xray: false,
         };
 
         let off = build_singbox_config(&nodes, &base(false)).unwrap();
@@ -3682,6 +3819,8 @@ mod tests {
                 bypass_lan: false,
                 tun_interface_name: None,
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap_err();
@@ -3718,6 +3857,8 @@ mod tests {
                 bypass_lan: false,
                 tun_interface_name: None,
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -3755,6 +3896,8 @@ mod tests {
                     bypass_lan: false,
                     tun_interface_name: None,
                     sidecar: None,
+                    tls_fragment_singbox: false,
+                    tls_fragment_xray: false,
                 },
             )
             .unwrap();
@@ -3798,6 +3941,8 @@ mod tests {
                 bypass_lan: false,
                 tun_interface_name: None,
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -3847,6 +3992,8 @@ mod tests {
                 bypass_lan: false,
                 tun_interface_name: None,
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -3897,6 +4044,8 @@ mod tests {
                 bypass_lan: false,
                 tun_interface_name: None,
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -3951,6 +4100,8 @@ mod tests {
                 bypass_lan: false,
                 tun_interface_name: None,
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -4118,6 +4269,8 @@ mod tests {
             bypass_lan: false,
             tun_interface_name: None,
             sidecar: None,
+            tls_fragment_singbox: false,
+            tls_fragment_xray: false,
         };
         let nodes = vec![sample_node("n1", "A"), sample_node("n2", "B")];
         let chain = ProxyChain::new(
@@ -4502,6 +4655,8 @@ mod tests {
             bypass_lan: false,
             tun_interface_name: None,
             sidecar: plan,
+            tls_fragment_singbox: false,
+            tls_fragment_xray: false,
         }
     }
 
@@ -4561,6 +4716,95 @@ mod tests {
             .find(|o| o["tag"] == json!(tag))
             .unwrap();
         assert_eq!(out["type"], "shadowsocks");
+    }
+
+    #[test]
+    fn tun_sidecar_emits_loop_guard_rules() {
+        let mut ip_node = sample_node("n1", "HK-xray");
+        ip_node.server = "203.0.113.7".into();
+        let domain_node = sample_node("n2", "HK-mihomo");
+        let nodes = vec![ip_node, domain_node];
+        let plan = SidecarPlan {
+            ports: vec![
+                crate::config::SidecarPort {
+                    node_id: "n1".into(),
+                    port: 20890,
+                    kind: crate::core::CoreKind::Xray,
+                },
+                crate::config::SidecarPort {
+                    node_id: "n2".into(),
+                    port: 20891,
+                    kind: crate::core::CoreKind::Mihomo,
+                },
+            ],
+        };
+        let mut opts = sidecar_opts(Some(plan));
+        opts.tun_enabled = true;
+        let built = build_singbox_config(&nodes, &opts).unwrap();
+        let rules = built.value["route"]["rules"].as_array().unwrap();
+
+        // Process rule: every sidecar kind in the plan, both platform name
+        // variants, egress direct.
+        let process_rule = rules
+            .iter()
+            .find(|r| r.get("process_name").is_some())
+            .expect("process_name loop-guard rule present");
+        assert_eq!(process_rule["outbound"], "direct");
+        let names = process_rule["process_name"].as_array().unwrap();
+        for expected in ["xray", "xray.exe", "mihomo", "mihomo.exe"] {
+            assert!(names.contains(&json!(expected)), "missing {expected}");
+        }
+
+        // The guard must win over hijack-dns / block-quic / user rules, or
+        // the sidecar's own DNS + QUIC egress still loops / gets swallowed.
+        let process_idx = rules
+            .iter()
+            .position(|r| r.get("process_name").is_some())
+            .unwrap();
+        let hijack_idx = rules
+            .iter()
+            .position(|r| r["action"] == json!("hijack-dns"))
+            .expect("hijack-dns rule present under TUN");
+        assert!(process_idx < hijack_idx);
+
+        // IP-literal server fallback covers delegated nodes with static
+        // IPs; domain-based servers rely on the process rule alone.
+        let ip_rule = rules
+            .iter()
+            .find(|r| r.get("ip_cidr").is_some())
+            .expect("ip_cidr fallback rule present");
+        assert_eq!(ip_rule["ip_cidr"], json!(["203.0.113.7/32"]));
+        assert_eq!(ip_rule["outbound"], "direct");
+    }
+
+    #[test]
+    fn sidecar_loop_guard_requires_tun() {
+        // Same delegation plan but TUN off: no guard rules — under
+        // system-proxy mode the sidecar's own egress never transits
+        // sing-box, and a process rule would be inert anyway.
+        let nodes = vec![sample_node("n1", "HK-xray")];
+        let plan = SidecarPlan {
+            ports: vec![crate::config::SidecarPort {
+                node_id: "n1".into(),
+                port: 20890,
+                kind: crate::core::CoreKind::Xray,
+            }],
+        };
+        let built = build_singbox_config(&nodes, &sidecar_opts(Some(plan))).unwrap();
+        let rules = built.value["route"]["rules"].as_array().unwrap();
+        assert!(rules.iter().all(|r| r.get("process_name").is_none()));
+        assert!(rules.iter().all(|r| r.get("ip_cidr").is_none()));
+    }
+
+    #[test]
+    fn tun_without_sidecar_has_no_loop_guard() {
+        let nodes = vec![sample_node("n1", "A")];
+        let mut opts = sidecar_opts(None);
+        opts.tun_enabled = true;
+        let built = build_singbox_config(&nodes, &opts).unwrap();
+        let rules = built.value["route"]["rules"].as_array().unwrap();
+        assert!(rules.iter().all(|r| r.get("process_name").is_none()));
+        assert!(rules.iter().all(|r| r.get("ip_cidr").is_none()));
     }
 
     #[test]
@@ -4718,5 +4962,127 @@ mod tests {
     fn vless_standard_flow_is_kept() {
         let (_, outbound, _) = node_to_outbound(&sample_vless(Some("xtls-rprx-vision"))).unwrap();
         assert_eq!(outbound["flow"], "xtls-rprx-vision");
+    }
+    fn base_build_options() -> BuildOptions {
+        BuildOptions {
+            mixed_port: 2080,
+            allow_lan: false,
+            api_port: 19090,
+            extra_inbounds: vec![],
+            api_secret: "test".into(),
+            current_node_id: None,
+            log_level: "info".into(),
+            rules: vec![],
+            rule_sets: vec![],
+            pools: vec![],
+            chains: vec![],
+            tun_enabled: false,
+            tun_stack: "mixed".into(),
+            dns: DnsSettings::default(),
+            outbound_mode: OutboundMode::Rule,
+            route_final: "proxy".into(),
+            auto_select: crate::domain::AutoSelectMode::Off,
+            probe_url: String::new(),
+            find_process: true,
+            tun_ipv6: false,
+            block_quic: false,
+            bypass_lan: false,
+            tun_interface_name: None,
+            sidecar: None,
+            tls_fragment_singbox: false,
+            tls_fragment_xray: false,
+        }
+    }
+
+    #[test]
+    fn tls_fragment_marks_only_tls_bearing_outbounds() {
+        let mut tls_node = sample_vless(None);
+        tls_node.tls = Some(TlsConfig {
+            enabled: true,
+            server_name: Some("vl.example.com".into()),
+            insecure: None,
+            alpn: None,
+            utls_fingerprint: None,
+            reality_public_key: None,
+            reality_short_id: None,
+        });
+        let plain_node = sample_ss();
+        let nodes = vec![tls_node, plain_node];
+
+        // Off (default): no fragment key anywhere.
+        let built = build_singbox_config(&nodes, &base_build_options()).expect("build");
+        for ob in built.value["outbounds"].as_array().unwrap() {
+            assert!(ob
+                .get("tls")
+                .map(|t| t.get("fragment").is_none())
+                .unwrap_or(true));
+        }
+
+        // On: only the TLS-bearing outbound carries tls.fragment.
+        let opts = {
+            let mut o = base_build_options();
+            o.tls_fragment_singbox = true;
+            o
+        };
+        let built = build_singbox_config(&nodes, &opts).expect("build");
+        let mut marked = 0;
+        for ob in built.value["outbounds"].as_array().unwrap() {
+            if ob
+                .get("tls")
+                .map(|t| t.get("fragment") == Some(&serde_json::json!(true)))
+                .unwrap_or(false)
+            {
+                marked += 1;
+                assert_eq!(
+                    ob["tls"]["enabled"], true,
+                    "only tls-enabled outbounds are marked"
+                );
+            }
+        }
+        assert_eq!(marked, 1, "exactly one TLS-bearing node outbound");
+    }
+    /// Live validation against a real sing-box binary (`check -c`): proves
+    /// the `tls.fragment` dial option we emit is accepted by the actual
+    /// core (verified against v1.13.18). Ignored by default — requires the
+    /// dev-tree bundled binary (run `scripts/fetch-bundled-core-*` first):
+    /// `cargo test --lib config::builder::tests::live_tls_fragment_config_validates -- --ignored`
+    #[test]
+    #[ignore = "needs the bundled dev sing-box binary"]
+    fn live_tls_fragment_config_validates() {
+        let bin = crate::core::find_bundled_core(None, crate::core::CoreKind::SingBox)
+            .expect("bundled sing-box binary — run the fetch-bundled-core script");
+        let mut node = sample_vless(None);
+        node.server = "127.0.0.1".into();
+        node.tls = Some(TlsConfig {
+            enabled: true,
+            server_name: Some("www.example.com".into()),
+            insecure: None,
+            alpn: None,
+            utls_fingerprint: Some("chrome".into()),
+            reality_public_key: None,
+            reality_short_id: None,
+        });
+        let opts = BuildOptions {
+            tls_fragment_singbox: true,
+            ..base_build_options()
+        };
+        let built = build_singbox_config(&[node], &opts).expect("build");
+        assert!(built.value.to_string().contains("\"fragment\":true"));
+        let dir = std::env::temp_dir().join(format!("satelite-frag-live-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("active.json");
+        std::fs::write(&path, built.value.to_string()).unwrap();
+        let output = std::process::Command::new(&bin)
+            .args(["check", "-c"])
+            .arg(&path)
+            .output()
+            .expect("spawn sing-box");
+        assert!(
+            output.status.success(),
+            "sing-box check failed:
+{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -554,6 +554,12 @@ export interface AppSettings {
   protocol_cores?: ProtocolCoreItem[];
   /** Base loopback port for the sidecar's per-node inbounds. */
   sidecar_port?: number;
+  /** TLS ClientHello fragmentation on the sing-box generator (`tls.fragment`
+   *  on TLS-bearing node outbounds). Effective only under the sing-box core. */
+  tls_fragment_singbox?: boolean;
+  /** Same for the Xray generator (freedom `fragment` outbound +
+   * `sockopt.dialerProxy`). Effective only under the Xray core. */
+  tls_fragment_xray?: boolean;
 }
 
 /** One protocol→core row of the multi-core settings table. */

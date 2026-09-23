@@ -1116,7 +1116,41 @@ export function SettingsPage() {
         {!customRuntime && visibleTab === "chain" && <ChainPage embedded />}
 
         {visibleTab === "multiCore" && settings && (
-          <section className="settings-panel" aria-label="Multi-core">
+          <section className="settings-panel" aria-label="Core settings">
+            <div className="card sidecar-card">
+              <div className="via-proxy-row">
+                <div>
+                  <div className="sys-proxy-title">{t("settings.tlsFragment")}</div>
+                  <div className="sys-proxy-desc">{t("settings.tlsFragmentDesc")}</div>
+                </div>
+              </div>
+              <div className="sidecar-body">
+                <div className="multicore-grid">
+                  <div className="multicore-row">
+                    <code>sing-box</code>
+                    <GlassSwitchControl
+                      checked={!!settings.tls_fragment_singbox}
+                      title={t("settings.tlsFragmentSingbox")}
+                      disabled={customRuntime}
+                      onChange={(v) => void patchApp({ tlsFragmentSingbox: v })}
+                    />
+                  </div>
+                  <div className="multicore-row">
+                    <code>Xray</code>
+                    <GlassSwitchControl
+                      checked={!!settings.tls_fragment_xray}
+                      title={t("settings.tlsFragmentXray")}
+                      disabled={customRuntime}
+                      onChange={(v) => void patchApp({ tlsFragmentXray: v })}
+                    />
+                  </div>
+                </div>
+                <div className="field-hint muted">
+                  {t("settings.tlsFragmentHint")}
+                </div>
+              </div>
+            </div>
+
             <div className="card sidecar-card">
               <div className="via-proxy-row">
                 <div>

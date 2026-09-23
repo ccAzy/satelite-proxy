@@ -388,6 +388,10 @@ export interface SettingsUpdatePayload {
   findProcess?: boolean | null;
   /** Multi-core mode master switch (sing-box main mode). */
   multiCoreEnabled?: boolean | null;
+  /** TLS ClientHello fragmentation, sing-box core (`tls.fragment`). */
+  tlsFragmentSingbox?: boolean | null;
+  /** TLS ClientHello fragmentation, Xray core (freedom fragment). */
+  tlsFragmentXray?: boolean | null;
   /** Per-protocol core routing rows (delegations only). */
   protocolCores?: import("./types").ProtocolCoreItem[] | null;
   /** Base loopback port for the sidecar's per-node inbounds. */
@@ -443,6 +447,8 @@ function scheduleSettingsWrite() {
       routeFinal: payload.routeFinal ?? null,
       findProcess: payload.findProcess ?? null,
       multiCoreEnabled: payload.multiCoreEnabled ?? null,
+      tlsFragmentSingbox: payload.tlsFragmentSingbox ?? null,
+      tlsFragmentXray: payload.tlsFragmentXray ?? null,
       protocolCores: payload.protocolCores ?? null,
       sidecarPort: payload.sidecarPort ?? null,
     })

@@ -107,6 +107,10 @@ pub fn update_settings(
     // core == "xray"); unknown protocols/cores are dropped silently.
     protocol_cores: Option<Vec<crate::domain::ProtocolCoreItem>>,
     sidecar_port: Option<u16>,
+    // TLS ClientHello fragmentation per core (Settings → 内核设置 → TLS 分片);
+    // mihomo's kernel has no equivalent, hence no switch for it.
+    tls_fragment_singbox: Option<bool>,
+    tls_fragment_xray: Option<bool>,
 ) -> Result<AppSettings, String> {
     let mut launch_changed: Option<bool> = None;
     let mut auto_select_changed: Option<(
@@ -116,7 +120,7 @@ pub fn update_settings(
     let mut route_final_changed = false;
     let mut find_process_changed = false;
     let mut bypass_lan_changed = false;
-    let mut multi_core_changed = false;
+    let mut core_config_changed = false;
     let theme_changed = theme.is_some();
     // Caption tint depends on accent/glow_color — re-apply live so the title
     // bar follows a color change without waiting for a window (re)creation.
@@ -348,7 +352,7 @@ pub fn update_settings(
                     return Err(AppError::Config("多核模式仅支持 sing-box 主内核".into()));
                 }
                 if store.settings.multi_core_enabled != v {
-                    multi_core_changed = true;
+                    core_config_changed = true;
                     store.settings.multi_core_enabled = v;
                 }
             }
@@ -375,7 +379,7 @@ pub fn update_settings(
                     })
                     .collect();
                 if cleaned != store.settings.protocol_cores {
-                    multi_core_changed = true;
+                    core_config_changed = true;
                     store.settings.protocol_cores = cleaned;
                 }
             }
@@ -384,8 +388,20 @@ pub fn update_settings(
                     return Err(AppError::Config("副进程端口无效".into()));
                 }
                 if store.settings.sidecar_port != p {
-                    multi_core_changed = true;
+                    core_config_changed = true;
                     store.settings.sidecar_port = p;
+                }
+            }
+            if let Some(v) = tls_fragment_singbox {
+                if store.settings.tls_fragment_singbox != v {
+                    core_config_changed = true;
+                    store.settings.tls_fragment_singbox = v;
+                }
+            }
+            if let Some(v) = tls_fragment_xray {
+                if store.settings.tls_fragment_xray != v {
+                    core_config_changed = true;
+                    store.settings.tls_fragment_xray = v;
                 }
             }
             Ok(store.settings.clone())
@@ -410,7 +426,7 @@ pub fn update_settings(
     let need_restart = route_final_changed
         || find_process_changed
         || bypass_lan_changed
-        || multi_core_changed
+        || core_config_changed
         || auto_select_changed
             .map(|(prev, next)| prev.is_kernel() != next.is_kernel())
             .unwrap_or(false);
@@ -513,7 +529,7 @@ pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, Str
             let names: HashMap<&str, String> = store
                 .subscriptions
                 .iter()
-                .map(|s| (s.id.as_str(), s.display_name()))
+                .map(|s| (s.id.as_str(), s.name.clone()))
                 .collect();
             let enabled: std::collections::HashSet<&str> = store
                 .subscriptions
@@ -577,7 +593,7 @@ pub fn list_nodes_page(
             let names: HashMap<&str, String> = store
                 .subscriptions
                 .iter()
-                .map(|s| (s.id.as_str(), s.display_name()))
+                .map(|s| (s.id.as_str(), s.name.clone()))
                 .collect();
             let enabled: std::collections::HashSet<&str> = store
                 .subscriptions
@@ -641,7 +657,7 @@ pub fn list_node_ids(
             let names: HashMap<&str, String> = store
                 .subscriptions
                 .iter()
-                .map(|s| (s.id.as_str(), s.display_name()))
+                .map(|s| (s.id.as_str(), s.name.clone()))
                 .collect();
             let enabled: std::collections::HashSet<&str> = store
                 .subscriptions
@@ -751,7 +767,7 @@ pub(crate) fn custom_config_nodes(state: &AppState) -> Result<Vec<ListedNode>, S
                     .find(|s| s.id == id)
                     .and_then(|s| match &s.source {
                         SubscriptionSource::Singbox { content } => {
-                            Some((s.id.clone(), s.display_name(), content.clone()))
+                            Some((s.id.clone(), s.name.clone(), content.clone()))
                         }
                         _ => None,
                     }),
@@ -848,6 +864,8 @@ pub async fn generate_singbox_config(
             bypass_lan: settings.bypass_lan,
             tun_interface_name: None,
             sidecar,
+            tls_fragment_singbox: settings.tls_fragment_singbox,
+            tls_fragment_xray: settings.tls_fragment_xray,
         };
         let result = match crate::core::CoreKind::parse(&core_type) {
             crate::core::CoreKind::Mihomo => {
@@ -977,6 +995,8 @@ pub async fn preview_singbox_config(
             bypass_lan: settings.bypass_lan,
             tun_interface_name: None,
             sidecar,
+            tls_fragment_singbox: settings.tls_fragment_singbox,
+            tls_fragment_xray: settings.tls_fragment_xray,
         };
         let result = match crate::core::CoreKind::parse(&core_type) {
             crate::core::CoreKind::Mihomo => {

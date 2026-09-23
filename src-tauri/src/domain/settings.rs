@@ -333,6 +333,19 @@ pub struct AppSettings {
     /// node i listens on `base + i` (127.0.0.1 only).
     #[serde(default = "default_sidecar_port")]
     pub sidecar_port: u16,
+
+    /// TLS ClientHello fragmentation (anti-SNI-DPI, Karing's "TLS 分段"):
+    /// sing-box generator emits `tls.fragment` on TLS-bearing node outbounds.
+    /// Only takes effect while running under the sing-box core.
+    #[serde(default)]
+    pub tls_fragment_singbox: bool,
+    /// Same feature for the Xray generator: a dedicated freedom `fragment`
+    /// outbound (tlshello) plus `sockopt.dialerProxy` on TLS-bearing nodes.
+    /// Only takes effect while running under the Xray core. mihomo's kernel
+    /// has no equivalent (feature request closed as not planned), so there
+    /// is deliberately no mihomo switch.
+    #[serde(default)]
+    pub tls_fragment_xray: bool,
 }
 
 /// One protocol→core row of the multi-core settings table.
@@ -486,6 +499,8 @@ impl Default for AppSettings {
             multi_core_enabled: false,
             protocol_cores: Vec::new(),
             sidecar_port: default_sidecar_port(),
+            tls_fragment_singbox: false,
+            tls_fragment_xray: false,
         }
     }
 }
