@@ -138,7 +138,10 @@ pub async fn fetch_latest_core_release_including_prerelease(
     let mirror_url = format!("{GITHUB_ASSET_MIRROR_PREFIX}{url}");
     crate::app_log::warn(
         "core",
-        format!("{}: direct releases api failed ({direct_err}); trying mirror: {mirror_url}", kind.display_name()),
+        format!(
+            "{}: direct releases api failed ({direct_err}); trying mirror: {mirror_url}",
+            kind.display_name()
+        ),
     );
     let resp = http_client(None)?
         .get(&mirror_url)

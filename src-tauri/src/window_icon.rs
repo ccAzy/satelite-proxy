@@ -29,8 +29,8 @@ mod native {
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateIcon, DestroyIcon, GetSystemMetrics, LoadImageW, SendMessageW, HICON, IMAGE_ICON,
-        LR_DEFAULTCOLOR, SM_CXICON, SM_CXSMICON, WM_SETICON, ICON_BIG, ICON_SMALL, ICON_SMALL2,
+        CreateIcon, DestroyIcon, GetSystemMetrics, LoadImageW, SendMessageW, HICON, ICON_BIG,
+        ICON_SMALL, ICON_SMALL2, IMAGE_ICON, LR_DEFAULTCOLOR, SM_CXICON, SM_CXSMICON, WM_SETICON,
     };
 
     /// tauri-build embeds the bundle icon group under this resource id.
@@ -67,9 +67,7 @@ mod native {
         }
         // Nearest embedded render; the title bar cell rescales the few-px
         // gap, if any, which is invisible.
-        let &(render_size, bytes) = BADGE_PNGS
-            .iter()
-            .min_by_key(|&&(s, _)| s.abs_diff(want))?;
+        let &(render_size, bytes) = BADGE_PNGS.iter().min_by_key(|&&(s, _)| s.abs_diff(want))?;
         let image = tauri::image::Image::from_bytes(bytes).ok()?;
         let (w, h) = (image.width() as i32, image.height() as i32);
         let rgba = image.rgba();
@@ -85,17 +83,9 @@ mod native {
             color.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
         }
         let handle = unsafe {
-            CreateIcon(
-                None,
-                w,
-                h,
-                1,
-                32,
-                mask.as_ptr(),
-                color.as_ptr(),
-            )
-            .ok()?
-            .0 as isize
+            CreateIcon(None, w, h, 1, 32, mask.as_ptr(), color.as_ptr())
+                .ok()?
+                .0 as isize
         };
         if let Ok(mut cache) = BADGE_CACHE.lock() {
             cache.push((render_size, handle));

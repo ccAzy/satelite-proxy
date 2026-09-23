@@ -8,9 +8,7 @@ use crate::state::AppState;
 use std::fs;
 use std::path::PathBuf;
 use tauri::window::Color;
-use tauri::{
-    AppHandle, LogicalSize, Manager, Runtime, Theme, WebviewUrl, WebviewWindowBuilder,
-};
+use tauri::{AppHandle, LogicalSize, Manager, Runtime, Theme, WebviewUrl, WebviewWindowBuilder};
 
 /// Matches frontend `windowLayout.ts` (logical px).
 const PRO_SIZE: (f64, f64) = (960.0, 720.0);
@@ -63,7 +61,9 @@ fn min_for_ui_mode(mode: &str) -> (f64, f64) {
 }
 
 fn window_size_file(app_data_dir: &std::path::Path, mode: &str) -> PathBuf {
-    app_data_dir.join("data").join(format!("window_size_{mode}"))
+    app_data_dir
+        .join("data")
+        .join(format!("window_size_{mode}"))
 }
 
 /// Persisted per-mode window size (logical px, "<w> <h>") so a recreated or
@@ -109,7 +109,11 @@ fn persist_main_window_size<R: Runtime>(app: &AppHandle<R>) {
     }
     let _ = fs::write(
         path,
-        format!("{} {}", size.width as f64 / scale, size.height as f64 / scale),
+        format!(
+            "{} {}",
+            size.width as f64 / scale,
+            size.height as f64 / scale
+        ),
     );
 }
 
