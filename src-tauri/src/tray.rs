@@ -364,9 +364,10 @@ fn tray_png(style: TrayIconStyle, running: bool) -> (&'static [u8], bool) {
         (TrayIconStyle::SaturnClassic, true) => {
             (include_bytes!("../icons/tray/saturn-classic-on.png"), false)
         }
-        (TrayIconStyle::SaturnClassic, false) => {
-            (include_bytes!("../icons/tray/saturn-classic-off.png"), false)
-        }
+        (TrayIconStyle::SaturnClassic, false) => (
+            include_bytes!("../icons/tray/saturn-classic-off.png"),
+            false,
+        ),
     }
 }
 
@@ -494,6 +495,10 @@ pub fn setup_tray<R: TauriRuntime>(app: &AppHandle<R>) -> tauri::Result<()> {
     // Prefer app icon; fall back to default tray without custom image if load fails.
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
+        // Windows tray convention: left click = open window (on_tray_icon_event),
+        // right click = menu. macOS keeps the native menu-on-left-click behavior.
+        // The flag is a no-op on Linux.
+        .show_menu_on_left_click(!cfg!(target_os = "windows"))
         .tooltip("Satelite")
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => {
