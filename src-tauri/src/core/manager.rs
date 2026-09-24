@@ -312,7 +312,16 @@ impl CoreManager {
     /// Important: if nothing is in LISTEN, return immediately (or after one short
     /// settle). A false `bind` failure without a listener used to spin ~2s and
     /// made settings restarts feel stuck (e.g. changing route.final).
-    pub fn force_free_port(port: u16) -> AppResult<()> {
+    ///
+    /// `residue_wait` bounds the no-listener wait below. It should only be
+    /// the long (~2s) window when the just-stopped core dropped from
+    /// elevated (setuid-root) to unelevated — that is the one case where a
+    /// root-owned socket's teardown can lag behind `wait()`/`try_wait()`
+    /// returning (see call sites). Same-privilege restarts and fresh cold
+    /// starts release ports fast; walking those into the same 2s wall on
+    /// unrelated port residue (stale TIME_WAIT, another app) made every such
+    /// start feel stuck for no reason.
+    pub fn force_free_port(port: u16, residue_wait: Duration) -> AppResult<()> {
         if Self::is_port_free(port) {
             return Ok(());
         }
@@ -326,7 +335,7 @@ impl CoreManager {
         // wall; if it still can't clear, fall through to the loop below and
         // let the start surface the real error.
         if !port_has_listener(port) {
-            let deadline = std::time::Instant::now() + Duration::from_millis(2000);
+            let deadline = std::time::Instant::now() + residue_wait;
             while !Self::is_port_free(port) && std::time::Instant::now() < deadline {
                 if port_has_listener(port) {
                     // A real listener appeared mid-wait — skip to the kill
@@ -368,13 +377,18 @@ impl CoreManager {
     }
 
     /// Ensure mixed + API ports are free (kill leftovers from previous runs).
-    pub fn ensure_ports_free(ports: &[u16]) -> AppResult<()> {
+    ///
+    /// `residue_wait` — see [`Self::force_free_port`] — should be the long
+    /// window only when this start is dropping privilege from the just-
+    /// stopped core (elevated/setuid-root → unelevated); same-privilege
+    /// restarts and cold starts pass the short window.
+    pub fn ensure_ports_free(ports: &[u16], residue_wait: Duration) -> AppResult<()> {
         let list: Vec<u16> = ports.iter().copied().filter(|p| *p != 0).collect();
         if list.is_empty() {
             return Ok(());
         }
         for &p in &list {
-            Self::force_free_port(p)?;
+            Self::force_free_port(p, residue_wait)?;
         }
         Ok(())
     }
@@ -465,6 +479,27 @@ impl CoreManager {
 
         // Drop our own child first if still tracked.
         let _ = self.stop();
+
+        // Port residue only lingers behind the long window when the
+        // just-stopped core dropped privilege (elevated/setuid-root, this
+        // start unelevated) — a root-owned socket's teardown can lag behind
+        // `wait()` returning. Same-privilege restarts (both elevated, both
+        // not) and cold starts (no previous binary) release ports quickly;
+        // see `force_free_port`.
+        #[cfg(target_os = "macos")]
+        let dropping_privilege = !elevated
+            && self
+                .binary_path
+                .as_deref()
+                .is_some_and(super::macos_auth::core_has_setuid);
+        #[cfg(not(target_os = "macos"))]
+        let dropping_privilege = true;
+        let port_residue_wait = if dropping_privilege {
+            Duration::from_millis(2000)
+        } else {
+            Duration::from_millis(250)
+        };
+
         let mut ports = Vec::new();
         if mixed_port != 0 {
             ports.push(mixed_port);
@@ -480,7 +515,7 @@ impl CoreManager {
             }
         }
         if !ports.is_empty() {
-            Self::ensure_ports_free(&ports)?;
+            Self::ensure_ports_free(&ports, port_residue_wait)?;
         }
         self.owned_ports = ports.clone();
 
@@ -522,7 +557,7 @@ impl CoreManager {
         // Light re-check only (first ensure_ports_free already waited if needed).
         for &p in &ports {
             if !Self::is_port_free(p) && port_has_listener(p) {
-                Self::force_free_port(p)?;
+                Self::force_free_port(p, Duration::from_millis(2000))?;
             }
         }
 
@@ -774,12 +809,12 @@ impl CoreManager {
             let _ = child.kill();
         }
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let deadline = std::time::Instant::now() + Duration::from_millis(1500);
         loop {
             match child.try_wait() {
                 Ok(Some(_)) => break,
                 Ok(None) if std::time::Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(50));
+                    std::thread::sleep(Duration::from_millis(20));
                 }
                 Ok(None) => {
                     let _ = child.kill();
@@ -814,13 +849,13 @@ impl CoreManager {
     /// never do during app-exit shutdown (see there).
     pub fn await_owned_ports_released(&mut self) {
         let ports = std::mem::take(&mut self.owned_ports);
-        let deadline = std::time::Instant::now() + Duration::from_millis(2500);
+        let deadline = std::time::Instant::now() + Duration::from_millis(1000);
         for port in ports {
             while !Self::is_port_free(port) && std::time::Instant::now() < deadline {
                 if Self::has_port_listener(port) {
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(25));
+                std::thread::sleep(Duration::from_millis(10));
             }
         }
     }
