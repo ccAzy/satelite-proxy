@@ -9,12 +9,18 @@
   1024px 画布、876px 瓦片 @86% 居中、圆角已内建在 alpha）
 - `icon.icns` / `icon.ico` / `icon.png` / `32x32.png` / `128x128.png` / `128x128@2x.png` /
   `Square*.png` / `StoreLogo.png` — 全套产物
-- 产物配方沿用现役 `generate-app-icons.py`（icns 满幅变体、ico 20/28px 档与
-  ≤48px 锐化/gamma 提亮），未改脚本
+- 产物配方沿用现役 `generate-app-icons.py`：icns 满幅变体；ico 20/28px 档与
+  ≤48px 锐化/gamma 提亮；**Windows/Linux 产物为瓦片归一化 ~96% + 冰蓝外发光版
+  （2026-09-24）**——生成期把源图瓦片 bbox 放大到画布 96%（保留瓦片自身圆角与
+  透明角、无垫底）并沿瓦片轮廓叠加柔和外辉光（宽度 3%、色取画作最亮像素均值，
+  `_glow_tint` 动态采样）：96% 归一化修复透明边距显小后，深色瓦片在深色任务栏上
+  仍只剩行星发光体可辨（亮像素 ~24%），外辉光让瓦片剪影在任何背景可读、观感
+  与满方形图标等大；源图保持 86% 边距惯例
 
 如需回退：把 `icon-saturn/` 产物拷回 `src-tauri/icons/`、其源图拷回
-`assets/icon/ic_launcher-web.png` 覆盖即可（回退土星环版**无需**重跑托盘脚本——
-本次换代未动托盘，saturn 托盘组本就还是土星环版）。
+`assets/icon/ic_launcher-web.png` 覆盖后**需重跑托盘脚本**（2026-09-24 起
+saturn 托盘组随应用图标联动=本套 frost 版，回退土星环版要一并重新生成；
+记得按 `generate-tray-icons.py` 文首惯例恢复 4 个手工托盘图标）。
 
 ## 原始稿（纯黑底）提取配方
 
