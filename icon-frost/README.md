@@ -5,17 +5,28 @@
 
 - 来源：`src-tauri/icons/new.png`（用户提供的 1254px 纯黑底原始稿，本目录存为
   `original-1254-blackbg.png`），提取配方见下
-- `ic_launcher-web.png` — 源图（`scripts/generate-app-icons.py` 的重采样输入，
-  1024px 画布、876px 瓦片 @86% 居中、圆角已内建在 alpha）
+- `ic_launcher-web.png` — Windows/Linux 源图（`scripts/generate-app-icons.py`
+  的重采样输入，1024px 画布、876px 瓦片 @86% 居中、圆角已内建在 alpha）
+- `ic_launcher-mac.png` — **macOS 专用源图（2026-09-24 起）**，929px，手工
+  调好内容占比与圆角、四角透明，`mac_icon_1024()` 直接按原样重采样到 icns
+  各档位，不做任何裁剪/缩放/居中/遮罩加工——见下方"macOS 图标"条目
 - `icon.icns` / `icon.ico` / `icon.png` / `32x32.png` / `128x128.png` / `128x128@2x.png` /
   `Square*.png` / `StoreLogo.png` — 全套产物
-- 产物配方沿用现役 `generate-app-icons.py`：icns 满幅变体；ico 20/28px 档与
+- 产物配方沿用现役 `generate-app-icons.py`：ico 20/28px 档与
   ≤48px 锐化/gamma 提亮；**Windows/Linux 产物为瓦片归一化 ~96% + 冰蓝外发光版
   （2026-09-24）**——生成期把源图瓦片 bbox 放大到画布 96%（保留瓦片自身圆角与
   透明角、无垫底）并沿瓦片轮廓叠加柔和外辉光（宽度 3%、色取画作最亮像素均值，
   `_glow_tint` 动态采样）：96% 归一化修复透明边距显小后，深色瓦片在深色任务栏上
   仍只剩行星发光体可辨（亮像素 ~24%），外辉光让瓦片剪影在任何背景可读、观感
   与满方形图标等大；源图保持 86% 边距惯例
+- **macOS 图标改用独立手工源图（2026-09-24，最终方案）**——此前 icns 一直从
+  `ic_launcher-web.png` 派生（先是 96%内容+15%自绘圆角套在不透明黑底板上再
+  裁圆角遮罩；发现老系统上显大且裁出来是"图形+矩形底板"的合成结构后，改成
+  90%内容+18%圆角、不画底板直接用瓦片裁剪结果）。这两版都是程序化派生，用户
+  最终直接手工精调出一张独立的 929px 源图（`ic_launcher-mac.png`，内容占比/
+  圆角/透明边都已调好），`mac_icon_1024()` 改为直接按原样重采样这张图到 icns
+  各档位，不再对 `ic_launcher-web.png` 做任何裁剪/缩放/加工。`MAC_ART_SCALE`/
+  `MAC_ICON_BG`/`MAC_CORNER_RATIO` 均已移除（死代码）
 
 如需回退：把 `icon-saturn/` 产物拷回 `src-tauri/icons/`、其源图拷回
 `assets/icon/ic_launcher-web.png` 覆盖后**需重跑托盘脚本**（2026-09-24 起

@@ -53,7 +53,8 @@ src-tauri/resources/rule-sets/*.srs
 nul
 .zcode
 
-# assets/icon: only the desktop app-icon source is tracked; the rest is
+# assets/icon: only the desktop app-icon sources are tracked; the rest is
 # Android (Interstellar) launcher material living here for convenience.
 assets/icon/*
 !assets/icon/ic_launcher-web.png
+!assets/icon/ic_launcher-mac.png

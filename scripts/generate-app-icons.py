@@ -22,14 +22,15 @@ macOS full-bleed treatment (opaque dark base + own 15% mask) — that
 variant was tried for Windows and reverted: the ~25% tile radius recedes
 past the 15% mask near the corners and the base showed as square corners.
 
-The .icns payloads use a FULL-BLEED variant (make_mac_icon): macOS 26
-Tahoe masks every app icon with the system squircle and plates any
-transparent margin with a light/white backdrop, so the source's 14%
-transparent margin showed up as a white ring. The variant scales the
-tile to ~96% of the canvas over an opaque dark base (color sampled from
-the tile) and applies its own 15% corner rounding — tighter than the
-system mask, so the mask always lands on opaque pixels (also fine on
-older macOS, which shows the 15%-rounded dark tile as-is).
+The .icns payloads (make_mac_icon) come from a separate, hand-tuned
+source: assets/icon/ic_launcher-mac.png. It's used as-is (only resized
+to each target resolution, no crop/rescale/recenter/base/mask) — content
+ratio and corner radius are already baked in by hand, tuned to look
+right both on macOS <= 15 (shows the .icns bitmap unmasked, so this
+source's own shape is exactly what renders) and macOS 26 Tahoe (re-masks
+every icon with the system squircle and plates transparent margins with
+a light backdrop). See mac_icon_1024 for the history of the two earlier
+programmatic derivations this replaced.
 
 Windows / Linux outputs (ico, Square*, pngs) keep the source's rounded
 transparent-margin design — those platforms render transparency natively.
@@ -42,17 +43,12 @@ import struct
 from io import BytesIO
 from pathlib import Path
 
-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageStat
+from PIL import Image, ImageChops, ImageFilter, ImageStat
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "src-tauri" / "icons"
 APP_ICON_SOURCE = ROOT / "assets" / "icon" / "ic_launcher-web.png"
-
-# macOS full-bleed variant: dark base sampled from the tile body, art
-# footprint and own-corner radius (kept well under the ~22% system mask).
-MAC_ICON_BG = (9, 10, 13, 255)
-MAC_ART_SCALE = 0.96
-MAC_CORNER_RATIO = 0.15
+MAC_ICON_SOURCE = ROOT / "assets" / "icon" / "ic_launcher-mac.png"
 
 # Windows/Linux variant: the tile itself upscaled onto the canvas, own
 # rounded corners intact, transparent corners (no base, no extra mask).
@@ -64,6 +60,7 @@ TILE_HALO_WIDTH = 0.03
 TILE_HALO_STRENGTH = 1.0
 
 _APP_ICON_SRC: Image.Image | None = None
+_MAC_ICON_SRC: Image.Image | None = None
 _TILE_ICON_1024: Image.Image | None = None
 _MAC_ICON_1024: Image.Image | None = None
 
@@ -73,6 +70,13 @@ def app_icon_source() -> Image.Image:
     if _APP_ICON_SRC is None:
         _APP_ICON_SRC = Image.open(APP_ICON_SOURCE).convert("RGBA")
     return _APP_ICON_SRC
+
+
+def mac_icon_source() -> Image.Image:
+    global _MAC_ICON_SRC
+    if _MAC_ICON_SRC is None:
+        _MAC_ICON_SRC = Image.open(MAC_ICON_SOURCE).convert("RGBA")
+    return _MAC_ICON_SRC
 
 
 def _glow_tint(art: Image.Image) -> tuple[int, int, int]:
@@ -133,36 +137,32 @@ def make_app_icon(size: int) -> Image.Image:
     return im
 
 
-def _rounded_mask(size: int, radius: float, ss: int = 4) -> Image.Image:
-    big = size * ss
-    m = Image.new("L", (big, big), 0)
-    ImageDraw.Draw(m).rounded_rectangle(
-        [0, 0, big - 1, big - 1], radius=radius * ss, fill=255
-    )
-    return m.resize((size, size), Image.Resampling.LANCZOS)
-
-
 def mac_icon_1024() -> Image.Image:
-    """Full-bleed macOS variant: opaque dark tile, own 15% corner rounding.
+    """macOS variant: ic_launcher-mac.png as-is, resized to the 1024
+    canvas — no bbox crop, no rescale/recenter, no base, no extra mask.
 
-    The source tile keeps its designed proportions; the painted base only
-    fills the outer margin + corners so the system squircle mask never
-    reveals its backdrop plate (macOS 26 Tahoe behavior).
+    This source is a hand-tuned macOS-only edit (content ratio + corner
+    radius already set to look right on both macOS <= 15, which shows
+    the .icns bitmap unmasked, and macOS 26 Tahoe, which re-masks it with
+    the system squircle). Do not run it through the ic_launcher-web.png
+    bbox/scale pipeline used for the Windows/Linux tile — that pipeline
+    is for normalizing a differently-proportioned source and would just
+    re-crop/rescale an image that's already at its intended proportions.
+
+    History: an earlier version derived this from ic_launcher-web.png by
+    cropping to content bbox, scaling to MAC_ART_SCALE, and centering on
+    a transparent canvas (no painted base) — replacing an even earlier
+    version that also painted an opaque MAC_ICON_BG rectangle behind the
+    tile and re-masked it with its own corner radius. Both were dropped
+    in favor of this hand-tuned source once available.
     """
     global _MAC_ICON_1024
     if _MAC_ICON_1024 is None:
-        art = app_icon_source()
-        bbox = art.split()[3].getbbox()
-        if bbox:
-            art = art.crop(bbox)
+        art = mac_icon_source()
         hi = 1024
-        target = int(round(hi * MAC_ART_SCALE))
-        scaled = art.resize((target, target), Image.Resampling.LANCZOS)
-        canvas = Image.new("RGBA", (hi, hi), MAC_ICON_BG)
-        off = (hi - target) // 2
-        canvas.alpha_composite(scaled, (off, off))
-        canvas.putalpha(_rounded_mask(hi, hi * MAC_CORNER_RATIO))
-        _MAC_ICON_1024 = canvas
+        if art.size != (hi, hi):
+            art = art.resize((hi, hi), Image.Resampling.LANCZOS)
+        _MAC_ICON_1024 = art
     return _MAC_ICON_1024
 
 
