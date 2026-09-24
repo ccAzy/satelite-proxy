@@ -377,6 +377,20 @@ fn default_vless_packet_encoding() -> String {
     "xudp".into()
 }
 
+/// sing-box's vless outbound only accepts `"xudp"` / `"packetaddr"` for
+/// `packet_encoding` — there is no `"none"` variant; omitting the field
+/// entirely is how a source expresses "no special UDP encoding". Some
+/// subscriptions (Clash Meta / sing-box formats) carry `packet-encoding:
+/// none` verbatim, which sing-box then rejects at startup with "initialize
+/// outbound: unknown packet encoding: none". Anything outside the known set
+/// falls back to `xudp`, matching the field's serde default.
+pub fn normalize_vless_packet_encoding(value: &str) -> String {
+    match value {
+        "xudp" | "packetaddr" => value.to_string(),
+        _ => default_vless_packet_encoding(),
+    }
+}
+
 /// Normalized proxy node — intermediate model between subscription and sing-box config.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProxyNode {
@@ -752,6 +766,25 @@ pub struct ManualNodeDraft {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalize_vless_packet_encoding_rejects_none() {
+        // Regression: Clash Meta / sing-box subscriptions can carry
+        // `packet-encoding: none` verbatim (see subscription::clash /
+        // subscription::singbox parse_vless). sing-box's vless outbound has
+        // no "none" variant and FATALs the whole config with "initialize
+        // outbound: unknown packet encoding: none" if that string reaches
+        // it — must fall back to the field's own default instead.
+        assert_eq!(normalize_vless_packet_encoding("none"), "xudp");
+        assert_eq!(normalize_vless_packet_encoding(""), "xudp");
+        assert_eq!(normalize_vless_packet_encoding("garbage"), "xudp");
+    }
+
+    #[test]
+    fn normalize_vless_packet_encoding_keeps_known_values() {
+        assert_eq!(normalize_vless_packet_encoding("xudp"), "xudp");
+        assert_eq!(normalize_vless_packet_encoding("packetaddr"), "packetaddr");
+    }
 
     fn ss_node(id: &str, name: &str, password: &str) -> ProxyNode {
         ProxyNode {

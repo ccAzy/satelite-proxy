@@ -356,8 +356,9 @@ fn parse_vless(
 ) -> Result<(Option<TlsConfig>, Option<Transport>, ProtocolConfig), String> {
     let uuid = get_str(map, &["uuid", "id"]).ok_or_else(|| "vless: missing uuid".to_string())?;
     let flow = get_str(map, &["flow"]);
-    let packet_encoding =
-        get_str(map, &["packet-encoding", "packet_encoding"]).unwrap_or_else(|| "xudp".into());
+    let packet_encoding = get_str(map, &["packet-encoding", "packet_encoding"])
+        .map(|v| crate::domain::normalize_vless_packet_encoding(&v))
+        .unwrap_or_else(|| "xudp".into());
 
     let mut tls = parse_tls_common(map, true);
     if let Some(ref mut t) = tls {

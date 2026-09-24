@@ -1661,7 +1661,11 @@ fn node_to_outbound_tagged(
                 "server": node.server,
                 "server_port": node.port,
                 "uuid": uuid,
-                "packet_encoding": packet_encoding,
+                // Last-line defense: sing-box only accepts "xudp"/"packetaddr"
+                // (see `normalize_vless_packet_encoding`). Parsers already
+                // normalize on import, but stored nodes from before that
+                // guard existed could still carry a raw "none" or similar.
+                "packet_encoding": crate::domain::normalize_vless_packet_encoding(packet_encoding),
             });
             // sing-box only accepts "xtls-rprx-vision" / "xtls-rprx-direct".
             // Some subscriptions carry Xray-core-only variants (e.g.
