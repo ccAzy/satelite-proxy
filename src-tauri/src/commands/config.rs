@@ -107,6 +107,10 @@ pub fn update_settings(
     // core == "xray"); unknown protocols/cores are dropped silently.
     protocol_cores: Option<Vec<crate::domain::ProtocolCoreItem>>,
     sidecar_port: Option<u16>,
+    // TLS ClientHello fragmentation per core (Settings → 内核设置 → TLS 分片);
+    // mihomo's kernel has no equivalent, hence no switch for it.
+    tls_fragment_singbox: Option<bool>,
+    tls_fragment_xray: Option<bool>,
 ) -> Result<AppSettings, String> {
     let mut launch_changed: Option<bool> = None;
     let mut auto_select_changed: Option<(
@@ -116,7 +120,7 @@ pub fn update_settings(
     let mut route_final_changed = false;
     let mut find_process_changed = false;
     let mut bypass_lan_changed = false;
-    let mut multi_core_changed = false;
+    let mut core_config_changed = false;
     let theme_changed = theme.is_some();
     // Caption tint depends on accent/glow_color — re-apply live so the title
     // bar follows a color change without waiting for a window (re)creation.
@@ -348,7 +352,7 @@ pub fn update_settings(
                     return Err(AppError::Config("多核模式仅支持 sing-box 主内核".into()));
                 }
                 if store.settings.multi_core_enabled != v {
-                    multi_core_changed = true;
+                    core_config_changed = true;
                     store.settings.multi_core_enabled = v;
                 }
             }
@@ -375,7 +379,7 @@ pub fn update_settings(
                     })
                     .collect();
                 if cleaned != store.settings.protocol_cores {
-                    multi_core_changed = true;
+                    core_config_changed = true;
                     store.settings.protocol_cores = cleaned;
                 }
             }
@@ -384,8 +388,20 @@ pub fn update_settings(
                     return Err(AppError::Config("副进程端口无效".into()));
                 }
                 if store.settings.sidecar_port != p {
-                    multi_core_changed = true;
+                    core_config_changed = true;
                     store.settings.sidecar_port = p;
+                }
+            }
+            if let Some(v) = tls_fragment_singbox {
+                if store.settings.tls_fragment_singbox != v {
+                    core_config_changed = true;
+                    store.settings.tls_fragment_singbox = v;
+                }
+            }
+            if let Some(v) = tls_fragment_xray {
+                if store.settings.tls_fragment_xray != v {
+                    core_config_changed = true;
+                    store.settings.tls_fragment_xray = v;
                 }
             }
             Ok(store.settings.clone())
@@ -410,7 +426,7 @@ pub fn update_settings(
     let need_restart = route_final_changed
         || find_process_changed
         || bypass_lan_changed
-        || multi_core_changed
+        || core_config_changed
         || auto_select_changed
             .map(|(prev, next)| prev.is_kernel() != next.is_kernel())
             .unwrap_or(false);
@@ -462,14 +478,58 @@ pub fn toggle_favorite_node(state: State<'_, AppState>, id: String) -> Result<bo
         .map_err(|e| e.to_string())
 }
 
+/// Prefill the node-edit form: stored node → flat manual draft. The draft
+/// round-trip is slightly lossy (XHTTP mode/extra have no form fields);
+/// `update_node` carries those over from the stored node on save.
+#[tauri::command(async)]
+pub fn get_node_draft(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<crate::domain::ManualNodeDraft, String> {
+    state
+        .with_store(|store| {
+            store
+                .nodes
+                .iter()
+                .find(|n| n.node.id == id)
+                .map(|n| crate::subscription::node_to_draft(&n.node))
+                .ok_or_else(|| AppError::NotFound(id.clone()))
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// Save parameter edits for one stored node. Edits are ephemeral — the next
+/// subscription refresh overwrites them (the UI warns before saving). An
+/// identity change rotates the node id; id-keyed references follow, and a
+/// changed enabled node set queues the usual debounced core rebuild.
+#[tauri::command(async)]
+pub fn update_node(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    draft: crate::domain::ManualNodeDraft,
+) -> Result<ProxyNode, String> {
+    let (node, node_set_changed) = state
+        .with_store_mut(|store| {
+            let ids_before = store.enabled_node_ids_sorted();
+            let node = store.update_node_from_draft(&id, &draft)?;
+            Ok((node, ids_before != store.enabled_node_ids_sorted()))
+        })
+        .map_err(|e| e.to_string())?;
+    if node_set_changed {
+        crate::rule_apply::request_restart(app, Vec::new());
+    }
+    Ok(node)
+}
+
 #[tauri::command(async)]
 pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, String> {
     state
         .with_store(|store| {
-            let names: HashMap<&str, &str> = store
+            let names: HashMap<&str, String> = store
                 .subscriptions
                 .iter()
-                .map(|s| (s.id.as_str(), s.name.as_str()))
+                .map(|s| (s.id.as_str(), s.name.clone()))
                 .collect();
             let enabled: std::collections::HashSet<&str> = store
                 .subscriptions
@@ -491,9 +551,8 @@ pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, Str
                     subscription_id: n.subscription_id.clone(),
                     subscription_name: names
                         .get(n.subscription_id.as_str())
-                        .copied()
-                        .unwrap_or("")
-                        .to_string(),
+                        .cloned()
+                        .unwrap_or_default(),
                     favorite: store.favorite_nodes.contains(&n.node.id),
                 })
                 .collect())
@@ -531,10 +590,10 @@ pub fn list_nodes_page(
 ) -> Result<NodePage, String> {
     state
         .with_store(|store| {
-            let names: HashMap<&str, &str> = store
+            let names: HashMap<&str, String> = store
                 .subscriptions
                 .iter()
-                .map(|s| (s.id.as_str(), s.name.as_str()))
+                .map(|s| (s.id.as_str(), s.name.clone()))
                 .collect();
             let enabled: std::collections::HashSet<&str> = store
                 .subscriptions
@@ -565,9 +624,8 @@ pub fn list_nodes_page(
                     subscription_id: n.subscription_id.clone(),
                     subscription_name: names
                         .get(n.subscription_id.as_str())
-                        .copied()
-                        .unwrap_or("")
-                        .to_string(),
+                        .cloned()
+                        .unwrap_or_default(),
                     favorite: store.favorite_nodes.contains(&n.node.id),
                 })
                 .collect();
@@ -596,10 +654,10 @@ pub fn list_node_ids(
 ) -> Result<Vec<String>, String> {
     state
         .with_store(|store| {
-            let names: HashMap<&str, &str> = store
+            let names: HashMap<&str, String> = store
                 .subscriptions
                 .iter()
-                .map(|s| (s.id.as_str(), s.name.as_str()))
+                .map(|s| (s.id.as_str(), s.name.clone()))
                 .collect();
             let enabled: std::collections::HashSet<&str> = store
                 .subscriptions
@@ -630,9 +688,8 @@ pub fn list_node_ids(
                     subscription_id: n.subscription_id.clone(),
                     subscription_name: names
                         .get(n.subscription_id.as_str())
-                        .copied()
-                        .unwrap_or("")
-                        .to_string(),
+                        .cloned()
+                        .unwrap_or_default(),
                     favorite: store.favorite_nodes.contains(&n.node.id),
                 })
                 .collect();
@@ -807,6 +864,8 @@ pub async fn generate_singbox_config(
             bypass_lan: settings.bypass_lan,
             tun_interface_name: None,
             sidecar,
+            tls_fragment_singbox: settings.tls_fragment_singbox,
+            tls_fragment_xray: settings.tls_fragment_xray,
         };
         let result = match crate::core::CoreKind::parse(&core_type) {
             crate::core::CoreKind::Mihomo => {
@@ -936,6 +995,8 @@ pub async fn preview_singbox_config(
             bypass_lan: settings.bypass_lan,
             tun_interface_name: None,
             sidecar,
+            tls_fragment_singbox: settings.tls_fragment_singbox,
+            tls_fragment_xray: settings.tls_fragment_xray,
         };
         let result = match crate::core::CoreKind::parse(&core_type) {
             crate::core::CoreKind::Mihomo => {

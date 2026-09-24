@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { useI18n } from "../i18n";
+import { subLabel } from "../nodeTooltip";
 import type { ProtocolConfig, ProxyNode, TransportDetail } from "../types";
 
 function Row({ label, value }: { label: string; value: ReactNode }) {
@@ -276,7 +277,16 @@ export function NodeDetailModal({
               label={t("nodes.fUdp")}
               value={node.udp === undefined ? undefined : t(node.udp ? "common.on" : "common.off")}
             />
-            <Row label={t("nodes.fSub")} value={node.subscription_name} />
+            <Row
+              label={t("nodes.fSub")}
+              value={
+                node.subscription_name ? (
+                  <span title={node.subscription_id || ""}>
+                    {subLabel(node.subscription_name, node.subscription_id)}
+                  </span>
+                ) : undefined
+              }
+            />
             <Row label={t("nodes.fSource")} value={node.source} />
           </Section>
           <Section title={t("nodes.detailProto")}>

@@ -15,6 +15,7 @@
  * Anything unmatched lands in the "other" group.
  */
 
+import { subLabel } from "./nodeTooltip";
 import type { ProxyNode } from "./types";
 
 export type GroupBy = "none" | "sub" | "proto" | "country";
@@ -198,12 +199,22 @@ export function groupNodes(
   if (by === "sub") {
     const map = new Map<string, NodeGroup>();
     for (const n of nodes) {
-      const key = n.subscription_name ?? "__nosub";
+      // Group on the subscription id, not the name: the same URL may be
+      // subscribed multiple times with identical names — the id keeps the
+      // copies in separate groups.
+      const sid = n.subscription_id || "";
+      const key = sid || n.subscription_name || "__nosub";
       let g = map.get(key);
       if (!g) {
         g = {
           key,
-          label: key === "__nosub" ? labels.noSub : key,
+          label:
+            key === "__nosub"
+              ? labels.noSub
+              : // Group headers are the one place the id is shown inline
+                // (`名字(id:末4位)`, see subLabel); everywhere else it's
+                // hover-only.
+                subLabel(n.subscription_name, n.subscription_id) ?? key,
           nodes: [],
         };
         map.set(key, g);

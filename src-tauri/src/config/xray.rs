@@ -30,6 +30,9 @@ use serde_json::{json, Map, Value};
 
 /// Tag of the leastPing balancer used when `auto_select=kernel`.
 const BALANCER_TAG: &str = "proxy-balancer";
+/// Freedom outbound that fragments TLS ClientHellos (`tls_fragment_xray`);
+/// TLS-bearing node outbounds dial through it via `sockopt.dialerProxy`.
+const FRAGMENT_OUT_TAG: &str = "fragment-out";
 /// `dns.tag` — inboundTag carried by queries of untagged DNS servers.
 const DNS_MODULE_TAG: &str = "dns-module";
 /// Tag of the direct domestic resolver server (matched via inboundTag).
@@ -37,6 +40,43 @@ const DIRECT_DNS_TAG: &str = "direct-dns";
 /// All node outbound tags share this prefix (balancer/observatory selectors
 /// match by prefix).
 const NODE_TAG_PREFIX: &str = "node-";
+
+/// Wire TLS ClientHello fragmentation into an Xray outbound list (settings
+/// `tls_fragment_xray`, used by both the main and sidecar generators).
+/// Xray has no per-outbound switch — the canonical wiring is a dedicated
+/// freedom outbound carrying `fragment` (tlshello) that node outbounds dial
+/// through via `sockopt.dialerProxy`. Only TLS-bearing nodes (security
+/// tls/reality) get the detour; plain/transport-only nodes have no
+/// ClientHello to split, and balancers carry no streamSettings.
+fn apply_xray_tls_fragment(outbounds: &mut Vec<Value>) {
+    for outbound in outbounds.iter_mut() {
+        let tls_bearing = outbound
+            .get("streamSettings")
+            .and_then(|s| s.get("security"))
+            .and_then(Value::as_str)
+            .is_some_and(|sec| sec == "tls" || sec == "reality");
+        if !tls_bearing {
+            continue;
+        }
+        let stream = outbound
+            .get_mut("streamSettings")
+            .and_then(Value::as_object_mut)
+            .expect("tls_bearing implies streamSettings");
+        let sockopt = stream
+            .entry("sockopt")
+            .or_insert_with(|| Value::Object(Map::new()));
+        if let Some(obj) = sockopt.as_object_mut() {
+            obj.insert("dialerProxy".into(), json!(FRAGMENT_OUT_TAG));
+        }
+    }
+    outbounds.push(json!({
+        "tag": FRAGMENT_OUT_TAG,
+        "protocol": "freedom",
+        "settings": {
+            "fragment": { "packets": "tlshello", "length": "100-200", "interval": "10-20" }
+        }
+    }));
+}
 
 pub fn build_xray_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<BuiltConfig> {
     let mut supported: Vec<ProxyNode> = nodes
@@ -161,6 +201,12 @@ pub fn build_xray_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
 
     let dns = build_dns(opts, &opts.rule_sets, &effective_rules);
     let inbounds = build_inbounds(opts);
+
+    // TLS ClientHello fragmentation (settings `tls_fragment_xray`), shared
+    // with the sidecar generator — see `apply_xray_tls_fragment`.
+    if opts.tls_fragment_xray {
+        apply_xray_tls_fragment(&mut outbounds);
+    }
 
     outbounds.push(json!({ "tag": "direct", "protocol": "freedom" }));
     outbounds.push(json!({ "tag": "block", "protocol": "blackhole" }));
@@ -326,7 +372,14 @@ pub const SIDECAR_INBOUND_PREFIX: &str = "in-sc";
 /// Entries must already be Xray-supported (`CoreKind::Xray.supports_node`) —
 /// the caller computes the delegation plan and falls back to native sing-box
 /// outbounds for anything the sidecar can't speak.
-pub fn build_xray_sidecar_config(entries: &[(ProxyNode, u16)]) -> AppResult<BuiltConfig> {
+///
+/// `tls_fragment` mirrors the main config's `tls_fragment_xray` setting —
+/// delegated nodes dial their real servers here, so the anti-DPI treatment
+/// follows them into the sidecar.
+pub fn build_xray_sidecar_config(
+    entries: &[(ProxyNode, u16)],
+    tls_fragment: bool,
+) -> AppResult<BuiltConfig> {
     if entries.is_empty() {
         return Err(AppError::Config(
             "xray sidecar plan is empty; nothing to delegate".into(),
@@ -386,6 +439,10 @@ pub fn build_xray_sidecar_config(entries: &[(ProxyNode, u16)]) -> AppResult<Buil
         "network": "tcp,udp",
         "outboundTag": selected_tag.clone(),
     }));
+
+    if tls_fragment {
+        apply_xray_tls_fragment(&mut outbounds);
+    }
 
     let mut config = Map::new();
     config.insert("log".into(), json!({ "loglevel": "warning" }));
@@ -1416,6 +1473,8 @@ mod tests {
             bypass_lan: true,
             tun_interface_name: None,
             sidecar: None,
+            tls_fragment_singbox: false,
+            tls_fragment_xray: false,
         }
     }
 
@@ -3029,7 +3088,7 @@ mod tests {
         let mut b = vless_node("b", None);
         b.id = "bbbb".into();
         let entries = vec![(a, 20890u16), (b, 20891)];
-        let built = build_xray_sidecar_config(&entries).expect("build");
+        let built = build_xray_sidecar_config(&entries, false).expect("build");
         let v = &built.value;
 
         // One loopback mixed inbound per node, 1:1 with the plan ports.
@@ -3057,7 +3116,7 @@ mod tests {
 
     #[test]
     fn sidecar_config_empty_entries_error() {
-        assert!(build_xray_sidecar_config(&[]).is_err());
+        assert!(build_xray_sidecar_config(&[], false).is_err());
     }
 
     /// Live validation of the sidecar companion config (same harness as
@@ -3081,7 +3140,7 @@ mod tests {
             reality_short_id: Some("abcd0123".into()),
         });
         let entries = vec![(node, 20890u16)];
-        let built = build_xray_sidecar_config(&entries).expect("build");
+        let built = build_xray_sidecar_config(&entries, false).expect("build");
 
         let tmp = std::env::temp_dir().join(format!(
             "satelite-xray-sidecar-live-{}-{}.json",
@@ -3104,5 +3163,98 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
+    }
+    #[test]
+    fn tls_fragment_wires_dialer_proxy_only_on_tls_bearing_nodes() {
+        let tls_node = vless_node("n1", None); // REALITY + tcp
+        let plain_node = {
+            let mut n = vless_node("n2", None);
+            n.tls = None;
+            n.id = String::new();
+            n.with_computed_id()
+        };
+        let nodes = vec![tls_node, plain_node];
+
+        let base = || BuildOptions {
+            mixed_port: 2080,
+            allow_lan: false,
+            api_port: 19090,
+            extra_inbounds: vec![],
+            api_secret: "test".into(),
+            current_node_id: None,
+            log_level: "info".into(),
+            rules: vec![],
+            rule_sets: vec![],
+            pools: vec![],
+            chains: vec![],
+            tun_enabled: false,
+            tun_stack: "mixed".into(),
+            dns: DnsSettings::default(),
+            outbound_mode: OutboundMode::Rule,
+            route_final: "proxy".into(),
+            auto_select: crate::domain::AutoSelectMode::Off,
+            probe_url: String::new(),
+            find_process: true,
+            tun_ipv6: false,
+            block_quic: false,
+            bypass_lan: false,
+            tun_interface_name: None,
+            sidecar: None,
+            tls_fragment_singbox: false,
+            tls_fragment_xray: false,
+        };
+
+        // Off (default): no fragment wiring.
+        let built = build_xray_config(&nodes, &base()).expect("build");
+        assert!(built.value["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|ob| {
+                ob.get("streamSettings")
+                    .and_then(|s| s.get("sockopt"))
+                    .is_none()
+            }));
+
+        // On: TLS node dials through fragment-out; plain node untouched;
+        // the freedom fragment outbound exists.
+        let opts = {
+            let mut o = base();
+            o.tls_fragment_xray = true;
+            o
+        };
+        let built = build_xray_config(&nodes, &opts).expect("build");
+        let outbounds = built.value["outbounds"].as_array().unwrap();
+        let frag = outbounds
+            .iter()
+            .find(|ob| ob["tag"] == "fragment-out")
+            .expect("fragment-out freedom outbound");
+        assert_eq!(frag["protocol"], "freedom");
+        assert_eq!(frag["settings"]["fragment"]["packets"], "tlshello");
+        let mut wired = 0;
+        for ob in outbounds {
+            if let Some(sock) = ob.get("streamSettings").and_then(|s| s.get("sockopt")) {
+                assert_eq!(sock["dialerProxy"], "fragment-out");
+                let sec = ob["streamSettings"]["security"].as_str().unwrap_or("");
+                assert!(
+                    sec == "tls" || sec == "reality",
+                    "only TLS-bearing nodes dial through fragment-out"
+                );
+                wired += 1;
+            }
+        }
+        assert_eq!(wired, 1, "exactly the TLS-bearing node is wired");
+
+        // Sidecar inherits the setting for its delegated nodes.
+        let entries = vec![(vless_node("s1", None), 21301u16)];
+        let built = build_xray_sidecar_config(&entries, true).expect("sidecar build");
+        let outbounds = built.value["outbounds"].as_array().unwrap();
+        assert!(outbounds.iter().any(|ob| ob["tag"] == "fragment-out"));
+        assert!(outbounds.iter().any(|ob| ob
+            .get("streamSettings")
+            .and_then(|s| s.get("sockopt"))
+            .and_then(|k| k.get("dialerProxy"))
+            .map(|v| v == "fragment-out")
+            .unwrap_or(false)));
     }
 }

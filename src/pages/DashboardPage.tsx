@@ -1090,7 +1090,15 @@ function coreDisplayName(kind: string | null | undefined): string {
             SATELITE {appVersion ?? "—"}
           </div>
 
-          <h1 className="dash-hero-title" ref={heroTitleRef} title={heroTitle ?? undefined}>
+          <h1
+            className="dash-hero-title"
+            ref={heroTitleRef}
+            title={
+              customRuntime
+                ? proxy?.runtime_profile_id || heroTitle || undefined
+                : heroTitle ?? undefined
+            }
+          >
             {heroTitle == null ? (
               <span className="skel skel-inline skel-w-40" aria-hidden />
             ) : (

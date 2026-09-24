@@ -1323,6 +1323,8 @@ mod tests {
             bypass_lan: true,
             tun_interface_name: None,
             sidecar: None,
+            tls_fragment_singbox: false,
+            tls_fragment_xray: false,
         }
     }
 

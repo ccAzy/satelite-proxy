@@ -333,8 +333,8 @@ export function AddConfigModal({
                   autoFocus
                 />
                 {duplicateUrl && (
-                  <span className="field-warning" role="status">
-                    {t("modal.duplicateUrl")}
+                  <span className="field-hint muted" role="status">
+                    {t("modal.duplicateUrlInfo")}
                   </span>
                 )}
               </label>

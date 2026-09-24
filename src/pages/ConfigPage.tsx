@@ -675,7 +675,7 @@ export function ConfigPage() {
                 {item.enabled ? "●" : "○"}
               </span>
             ) : null}
-            <h3>{item.name}</h3>
+            <h3 title={item.id}>{item.name}</h3>
             <div className="sub-card-top-right">
               <span className="sub-card-updated muted">
                 {formatRelative(item.last_update, t)}

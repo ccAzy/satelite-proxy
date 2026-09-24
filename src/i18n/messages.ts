@@ -340,8 +340,15 @@ const en = {
   "settings.coreHintMihomo":
     "mihomo is the canonical Clash Meta kernel: full protocol coverage (incl. REALITY/Vision/TUIC/WireGuard) with hot node switching. Switching the active core restarts it.",
   "settings.coreUse": "Use this core",
-  "settings.tabMultiCore": "Multi-Core",
+  "settings.tabMultiCore": "Cores",
   "settings.hintMultiCore": "Route node protocols to different cores",
+  "settings.tlsFragment": "TLS fragmentation",
+  "settings.tlsFragmentDesc":
+    "Split the TLS ClientHello into multiple TCP segments so SNI-based DPI cannot read it. Client-side only — no server changes needed.",
+  "settings.tlsFragmentSingbox": "Enable under sing-box core",
+  "settings.tlsFragmentXray": "Enable under Xray core",
+  "settings.tlsFragmentHint":
+    "Each switch only takes effect while running under its core; toggling restarts a running core. mihomo's kernel has no TLS-fragmentation support.",
   "settings.multiCore": "Multi-core mode",
   "settings.multiCoreRunning": "sidecar running",
   "settings.multiCoreIdle": "not running",
@@ -472,6 +479,10 @@ const en = {
   "nodes.ctxTestPing": "Ping test",
   "nodes.ctxTestReal": "Real latency",
   "nodes.ctxDetails": "Details",
+  "nodes.ctxEdit": "Edit Node",
+  "nodes.editTitle": "Edit Node",
+  "nodes.editOverwriteHint":
+    "A subscription refresh overwrites these edits with the provider's data.",
   "nodes.detailTitle": "Node details",
   "nodes.detailBasic": "Basic",
   "nodes.detailProto": "Protocol parameters",
@@ -935,7 +946,8 @@ const en = {
   "modal.namePhManual": "Required, e.g. Home broadband",
   "modal.namePhParse": "e.g. Self-hosted nodes / protocol links",
   "modal.urlLabel": "Subscription URL",
-  "modal.duplicateUrl": "Subscription already exists; saving overwrites it",
+  "modal.duplicateUrlInfo":
+    "This URL is already subscribed; adding it again creates a separate subscription that refreshes on its own schedule",
   "modal.viaProxy": "Fetch via proxy",
   "modal.viaProxyDesc": "Fetch through the local mixed port (core must be running)",
   "modal.autoUpdate": "Auto update",
@@ -1446,8 +1458,15 @@ const zh: Record<MessageKey, string> = {
   "settings.coreHintMihomo":
     "mihomo 为标准 Clash Meta 内核：协议全覆盖（含 REALITY/Vision/TUIC/WireGuard），支持节点热切换。切换内核会重启。",
   "settings.coreUse": "启用该内核",
-  "settings.tabMultiCore": "多核模式",
+  "settings.tabMultiCore": "内核设置",
   "settings.hintMultiCore": "按协议把节点交给不同内核转发",
+  "settings.tlsFragment": "TLS 分片",
+  "settings.tlsFragmentDesc":
+    "把 TLS ClientHello 拆成多个小 TCP 段，规避按 SNI 的深度包检测。纯客户端行为，无需服务端改动。",
+  "settings.tlsFragmentSingbox": "sing-box 内核下启用",
+  "settings.tlsFragmentXray": "Xray 内核下启用",
+  "settings.tlsFragmentHint":
+    "开关仅在对应内核模式下生效，切换会重启运行中的内核；mihomo 内核不支持 TLS 分片。",
   "settings.multiCore": "多核模式",
   "settings.multiCoreRunning": "副进程运行中",
   "settings.multiCoreIdle": "未运行",
@@ -1576,6 +1595,9 @@ const zh: Record<MessageKey, string> = {
   "nodes.ctxTestPing": "测 Ping",
   "nodes.ctxTestReal": "测真实延迟",
   "nodes.ctxDetails": "详情",
+  "nodes.ctxEdit": "编辑节点",
+  "nodes.editTitle": "编辑节点",
+  "nodes.editOverwriteHint": "订阅更新时会用机场原始数据覆盖本次编辑",
   "nodes.detailTitle": "节点详情",
   "nodes.detailBasic": "基础信息",
   "nodes.detailProto": "协议参数",
@@ -2018,7 +2040,8 @@ const zh: Record<MessageKey, string> = {
   "modal.namePhManual": "必填，例如：家宽备用",
   "modal.namePhParse": "例如：自建节点组 / 协议链接",
   "modal.urlLabel": "订阅链接",
-  "modal.duplicateUrl": "订阅已存在，保存会覆盖已有配置",
+  "modal.duplicateUrlInfo":
+    "该 URL 已存在订阅；再次添加会创建独立订阅，各自独立更新",
   "modal.viaProxy": "走代理添加",
   "modal.viaProxyDesc": "经本地 mixed 端口拉取（需先启动代理核心）",
   "modal.autoUpdate": "自动更新",

@@ -12,6 +12,7 @@ import type {
   LatencyBatchResult,
   LatencyResult,
   ConnectionView,
+  ManualNodeDraft,
   NodeLatencyChange,
   NodePool,
   PoolMode,
@@ -199,6 +200,17 @@ export function renameNode(id: string, name: string) {
   return invoke<ProxyNode>("rename_node", { id, name });
 }
 
+/** Prefill the node-edit form (stored node → flat manual draft). */
+export function getNodeDraft(id: string) {
+  return invoke<ManualNodeDraft>("get_node_draft", { id });
+}
+
+/** Save parameter edits for one stored node. Edits are overwritten by the
+ *  next subscription refresh — see the edit modal's warning. */
+export function updateNode(id: string, draft: ManualNodeDraft) {
+  return invoke<ProxyNode>("update_node", { id, draft });
+}
+
 /** Toggle a node's favorite flag. Returns the new state. */
 export function toggleFavoriteNode(id: string) {
   return invoke<boolean>("toggle_favorite_node", { id });
@@ -376,6 +388,10 @@ export interface SettingsUpdatePayload {
   findProcess?: boolean | null;
   /** Multi-core mode master switch (sing-box main mode). */
   multiCoreEnabled?: boolean | null;
+  /** TLS ClientHello fragmentation, sing-box core (`tls.fragment`). */
+  tlsFragmentSingbox?: boolean | null;
+  /** TLS ClientHello fragmentation, Xray core (freedom fragment). */
+  tlsFragmentXray?: boolean | null;
   /** Per-protocol core routing rows (delegations only). */
   protocolCores?: import("./types").ProtocolCoreItem[] | null;
   /** Base loopback port for the sidecar's per-node inbounds. */
@@ -431,6 +447,8 @@ function scheduleSettingsWrite() {
       routeFinal: payload.routeFinal ?? null,
       findProcess: payload.findProcess ?? null,
       multiCoreEnabled: payload.multiCoreEnabled ?? null,
+      tlsFragmentSingbox: payload.tlsFragmentSingbox ?? null,
+      tlsFragmentXray: payload.tlsFragmentXray ?? null,
       protocolCores: payload.protocolCores ?? null,
       sidecarPort: payload.sidecarPort ?? null,
     })

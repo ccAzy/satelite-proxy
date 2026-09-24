@@ -2,8 +2,8 @@ use crate::domain::{
     ManualNodeDraft, ProxyNode, SubscriptionDetail, SubscriptionSource, SubscriptionView,
 };
 use crate::services::import::{
-    canonical_subscription_url, import_from_file, import_from_file_with_id, import_from_node,
-    import_from_singbox, import_from_text, import_from_url_with_id,
+    import_from_file, import_from_file_with_id, import_from_node, import_from_singbox,
+    import_from_text, import_from_url_with_id, subscription_id, unique_subscription_id,
 };
 use crate::state::AppState;
 use crate::subscription::node_to_draft;
@@ -163,6 +163,19 @@ pub fn get_subscription(
         .map_err(|e| e.to_string())
 }
 
+/// Fresh unique id for a new subscription add. The base is the source hash
+/// (the first add of a URL keeps the historical id shape); a collision with
+/// an existing subscription re-hashes with entropy — the same URL may now be
+/// subscribed multiple times and each copy must stay independent.
+fn fresh_subscription_id(
+    state: &State<'_, AppState>,
+    source: SubscriptionSource,
+) -> Result<String, String> {
+    state
+        .with_store(|store| Ok(unique_subscription_id(store, subscription_id(&source))))
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn add_subscription_url(
     app: tauri::AppHandle,
@@ -175,28 +188,17 @@ pub async fn add_subscription_url(
     user_agent: Option<String>,
 ) -> Result<ImportResult, String> {
     let via = via_proxy.unwrap_or(false);
-    let canonical = canonical_subscription_url(&url);
-    let existing_id = state
-        .with_store(|store| {
-            Ok(store
-                .subscriptions
-                .iter()
-                .find_map(|subscription| match &subscription.source {
-                    SubscriptionSource::Url { url: existing_url }
-                        if canonical.is_some()
-                            && canonical_subscription_url(existing_url) == canonical =>
-                    {
-                        Some(subscription.id.clone())
-                    }
-                    _ => None,
-                }))
-        })
-        .map_err(|e| e.to_string())?;
+    let fresh_id = fresh_subscription_id(
+        &state,
+        SubscriptionSource::Url {
+            url: url.trim().to_string(),
+        },
+    )?;
     let mixed_port = state
         .with_store(|s| Ok(s.settings.mixed_port))
         .map_err(|e| e.to_string())?;
     let mut outcome =
-        import_from_url_with_id(name, url, existing_id, via, Some(mixed_port), user_agent)
+        import_from_url_with_id(name, url, Some(fresh_id), via, Some(mixed_port), user_agent)
             .await
             .map_err(|e| e.to_string())?;
     apply_auto_update_prefs(
@@ -228,7 +230,13 @@ pub async fn add_subscription_text(
     name: Option<String>,
     content: String,
 ) -> Result<ImportResult, String> {
-    let outcome = import_text_blocking(name, content, None).await?;
+    let fresh_id = fresh_subscription_id(
+        &state,
+        SubscriptionSource::Text {
+            content: content.trim().to_string(),
+        },
+    )?;
+    let outcome = import_text_blocking(name, content, Some(fresh_id)).await?;
     persist_import(&app, &state, outcome)
 }
 
@@ -240,7 +248,18 @@ pub async fn add_subscription_node(
     uri: Option<String>,
     node: Option<ManualNodeDraft>,
 ) -> Result<ImportResult, String> {
-    let outcome = import_node_blocking(name, uri, node, None).await?;
+    // Share-URI adds hash the URI; rapid duplicates must not merge. Form-only
+    // drafts already carry nanos entropy inside `subscription_id`.
+    let fresh_id = match uri.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(trimmed) => Some(fresh_subscription_id(
+            &state,
+            SubscriptionSource::Node {
+                uri: Some(trimmed.to_string()),
+            },
+        )?),
+        None => None,
+    };
+    let outcome = import_node_blocking(name, uri, node, fresh_id).await?;
     persist_import(&app, &state, outcome)
 }
 
@@ -253,7 +272,13 @@ pub async fn add_subscription_singbox(
     path: Option<String>,
 ) -> Result<ImportResult, String> {
     let body = load_inline_body(content, path).await?;
-    let outcome = import_singbox_blocking(name, body, None).await?;
+    let fresh_id = fresh_subscription_id(
+        &state,
+        SubscriptionSource::Singbox {
+            content: body.clone(),
+        },
+    )?;
+    let outcome = import_singbox_blocking(name, body, Some(fresh_id)).await?;
     persist_import(&app, &state, outcome)
 }
 
@@ -308,46 +333,26 @@ pub async fn update_subscription(
         .map_err(|e| e.to_string())?;
 
     let kind = kind.to_ascii_lowercase();
-    let (outcome, replaced_id, replaced_enabled) = match kind.as_str() {
+    let (outcome, replaced_id) = match kind.as_str() {
         "url" => {
             let url = url
                 .filter(|s| !s.trim().is_empty())
                 .map(|s| s.trim().to_string())
                 .ok_or_else(|| "url is required".to_string())?;
-            let duplicate = state
-                .with_store(|store| {
-                    Ok(store.subscriptions.iter().find_map(|subscription| {
-                        if subscription.id == id {
-                            return None;
-                        }
-                        match &subscription.source {
-                            SubscriptionSource::Url { url: existing_url }
-                                if canonical_subscription_url(existing_url)
-                                    == canonical_subscription_url(&url) =>
-                            {
-                                Some((subscription.id.clone(), subscription.enabled))
-                            }
-                            _ => None,
-                        }
-                    }))
-                })
-                .map_err(|e| e.to_string())?;
-            let target_id = duplicate
-                .as_ref()
-                .map(|(duplicate_id, _)| duplicate_id.clone())
-                .unwrap_or_else(|| id.clone());
+            // Same-URL subscriptions are allowed: keep this subscription's
+            // stable id instead of merging into whichever other subscription
+            // happens to hold the same URL.
             let outcome = import_from_url_with_id(
                 Some(display_name),
                 url,
-                Some(target_id),
+                Some(id.clone()),
                 via,
                 Some(mixed_port),
                 user_agent,
             )
             .await
             .map_err(|e| e.to_string())?;
-            let replaced_enabled = duplicate.as_ref().is_some_and(|(_, enabled)| *enabled);
-            (outcome, duplicate.map(|_| id.clone()), replaced_enabled)
+            (outcome, None::<String>)
         }
         "file" => {
             let path = path
@@ -358,7 +363,7 @@ pub async fn update_subscription(
                 import_file_blocking(Some(display_name), PathBuf::from(path), Some(id.clone()))
                     .await?;
             o.subscription.via_proxy = false;
-            (o, None, false)
+            (o, None)
         }
         "text" => {
             let content = content
@@ -367,25 +372,25 @@ pub async fn update_subscription(
                 .ok_or_else(|| "content is required".to_string())?;
             let mut o = import_text_blocking(Some(display_name), content, Some(id.clone())).await?;
             o.subscription.via_proxy = false;
-            (o, None, false)
+            (o, None)
         }
         "node" => {
             let mut o =
                 import_node_blocking(Some(display_name), uri, node, Some(id.clone())).await?;
             o.subscription.via_proxy = false;
-            (o, None, false)
+            (o, None)
         }
         "singbox" => {
             let body = load_inline_body(content, path).await?;
             let mut o = import_singbox_blocking(Some(display_name), body, Some(id.clone())).await?;
             o.subscription.via_proxy = false;
-            (o, None, false)
+            (o, None)
         }
         _ => return Err("kind must be url, file, text, node, or singbox".into()),
     };
 
     let mut outcome = outcome;
-    outcome.subscription.enabled = existing.enabled || replaced_enabled;
+    outcome.subscription.enabled = existing.enabled;
     if outcome.subscription.source.is_remote() {
         apply_auto_update_prefs(
             &mut outcome.subscription,

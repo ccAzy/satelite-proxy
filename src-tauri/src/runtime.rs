@@ -1307,8 +1307,11 @@ impl Runtime {
         // outbounds already point at the sidecar ports, so leaving it
         // running would black-hole delegated nodes.
         if let Some(plan) = &sidecar_plan {
+            let tls_fragment = store.settings.tls_fragment_xray;
             for kind in plan.used_kinds() {
-                if let Err(e) = self.start_sidecar(kind, app_data_dir, resource_dir, &nodes, plan) {
+                if let Err(e) =
+                    self.start_sidecar(kind, app_data_dir, resource_dir, &nodes, plan, tls_fragment)
+                {
                     // Roll back the sidecars already started this round and
                     // the main core itself.
                     self.stop_all_sidecars();
@@ -1350,6 +1353,7 @@ impl Runtime {
         resource_dir: Option<&Path>,
         nodes: &[ProxyNode],
         plan: &SidecarPlan,
+        tls_fragment: bool,
     ) -> AppResult<()> {
         let entries: Vec<(ProxyNode, u16)> = plan
             .entries_for(kind)
@@ -1364,7 +1368,7 @@ impl Runtime {
         let ports = entries.iter().map(|(_, p)| *p).collect::<Vec<u16>>();
         let config_path = match kind {
             CoreKind::Xray => {
-                let built = build_xray_sidecar_config(&entries)?;
+                let built = build_xray_sidecar_config(&entries, tls_fragment)?;
                 write_xray_sidecar_config(app_data_dir, &built)?
             }
             CoreKind::Mihomo => {
@@ -2210,6 +2214,8 @@ fn build_options(store: &AppStore, api_secret: String) -> BuildOptions {
         bypass_lan: store.settings.bypass_lan,
         tun_interface_name: None,
         sidecar: None,
+        tls_fragment_singbox: store.settings.tls_fragment_singbox,
+        tls_fragment_xray: store.settings.tls_fragment_xray,
     }
 }
 
@@ -2433,11 +2439,11 @@ fn node_tag_info_map(store: &AppStore) -> HashMap<String, NodeInfo> {
         .filter(|s| s.enabled)
         .map(|s| s.id.as_str())
         .collect();
-    // subscription id → name
-    let sub_name: HashMap<&str, &str> = store
+    // subscription id → clean name (id stays available via the map key)
+    let sub_name: HashMap<&str, String> = store
         .subscriptions
         .iter()
-        .map(|s| (s.id.as_str(), s.name.as_str()))
+        .map(|s| (s.id.as_str(), s.name.clone()))
         .collect();
     store
         .nodes
@@ -2448,7 +2454,7 @@ fn node_tag_info_map(store: &AppStore) -> HashMap<String, NodeInfo> {
                 name: n.node.name.clone(),
                 subscription: sub_name
                     .get(n.subscription_id.as_str())
-                    .map(|s| s.to_string())
+                    .cloned()
                     .unwrap_or_default(),
             };
             (outbound_tag(&n.node), info)

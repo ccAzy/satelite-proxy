@@ -368,6 +368,9 @@ impl Subscription {
         };
         SubscriptionView {
             id: self.id.clone(),
+            // Clean name only — the UI shows the id on hover / in group
+            // headers via the separate `id` field (same-URL copies are told
+            // apart there, not by baking a suffix into every label).
             name: self.name.clone(),
             source_kind,
             source_display,

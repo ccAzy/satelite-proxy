@@ -405,10 +405,9 @@ pub struct ProxyNode {
 
 impl ProxyNode {
     /// Stable id keyed on backend identity — server/port/protocol/credentials —
-    /// deliberately excluding display name and subscription id. Airport
-    /// remarks and subscription URLs both change across a refresh; the
-    /// underlying node (same host, same auth) shouldn't lose its identity
-    /// just because the airport renamed it or rotated its sub URL.
+    /// deliberately excluding the display name. Airport remarks change across
+    /// a refresh; the underlying node (same host, same auth) shouldn't lose
+    /// its identity just because the airport renamed it.
     pub fn compute_id(server: &str, port: u16, protocol: Protocol, identity_extra: &str) -> String {
         let mut hasher = Sha256::new();
         hasher.update(server.as_bytes());
@@ -429,6 +428,32 @@ impl ProxyNode {
             self.protocol,
             &config_identity(&self.config),
         );
+        self
+    }
+
+    /// Subscription-scoped id: `scope` (the subscription id) is folded into
+    /// the backend-identity hash. The same URL may now be subscribed more
+    /// than once; without the scope, twin copies of one backend would hash
+    /// to the same id and every id-keyed reference (current node, rule-set
+    /// pins, chain hops, favorites) would resolve to whichever copy the
+    /// lookup happened to hit first. Within one subscription the id stays
+    /// stable across refreshes, so re-location semantics are unchanged.
+    pub fn scoped_id(&self, scope: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(scope.as_bytes());
+        hasher.update(b"|");
+        hasher.update(self.server.as_bytes());
+        hasher.update(b"|");
+        hasher.update(self.port.to_string().as_bytes());
+        hasher.update(b"|");
+        hasher.update(self.protocol.as_str().as_bytes());
+        hasher.update(b"|");
+        hasher.update(config_identity(&self.config).as_bytes());
+        hex::encode(&hasher.finalize()[..16])
+    }
+
+    pub fn with_scoped_id(mut self, scope: &str) -> Self {
+        self.id = self.scoped_id(scope);
         self
     }
 

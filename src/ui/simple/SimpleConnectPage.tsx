@@ -17,6 +17,7 @@ import { HeroVisual } from "../../components/HeroVisual";
 import { useCaptureModeSwitch } from "../../hooks/useCaptureModeSwitch";
 import { useVisibleInterval } from "../../hooks/useVisibleInterval";
 import { useI18n } from "../../i18n";
+import { subLabel } from "../../nodeTooltip";
 import type {
   ProxyNode,
   ProxyStatus,
@@ -269,7 +270,12 @@ export function SimpleConnectPage({ onGoServers, onGoTraffic }: Props) {
               </>
             )}
           </div>
-          <h1 className="dash-hero-title">
+          <h1
+            className="dash-hero-title"
+            title={
+              customRuntime ? proxy?.runtime_profile_id || undefined : undefined
+            }
+          >
             {heroTitle == null ? (
               <span className="skel skel-inline skel-w-40" aria-hidden />
             ) : (
@@ -323,7 +329,13 @@ export function SimpleConnectPage({ onGoServers, onGoTraffic }: Props) {
               ) : enabledSubs.length > 0 ? (
                 <>
                   {enabledSubs.map((s) => s.name).join(" · ")}
-                  <span className="shs-count">
+                  <span
+                    className="shs-count"
+                    title={enabledSubs
+                      .map((s) => subLabel(s.name, s.id))
+                      .filter(Boolean)
+                      .join("\n")}
+                  >
                     {t("simple.subNodes", { n: enabledNodeCount })}
                   </span>
                 </>
