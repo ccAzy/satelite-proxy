@@ -2166,6 +2166,7 @@ mod tests {
                 shadow_tls: None,
             },
             source: Some("ss".into()),
+            raw: None,
             latency_ms: None,
             latency_at: None,
         }
@@ -2189,6 +2190,7 @@ mod tests {
                 shadow_tls: None,
             },
             source: Some("ss2".into()),
+            raw: None,
             latency_ms: None,
             latency_at: None,
         }
@@ -2213,6 +2215,7 @@ mod tests {
                 mtu: None,
             },
             source: None,
+            raw: None,
             latency_ms: None,
             latency_at: None,
         }
@@ -3786,6 +3789,7 @@ mod tests {
                 security: "auto".into(),
             },
             source: None,
+            raw: None,
             latency_ms: None,
             latency_at: None,
         };
@@ -4902,6 +4906,7 @@ mod tests {
                 obfs_password: obfs_password.map(String::from),
             },
             source: Some("hysteria2".into()),
+            raw: None,
             latency_ms: None,
             latency_at: None,
         }
@@ -4923,6 +4928,7 @@ mod tests {
                 packet_encoding: "xudp".into(),
             },
             source: Some("vless".into()),
+            raw: None,
             latency_ms: None,
             latency_at: None,
         }

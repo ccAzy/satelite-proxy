@@ -988,11 +988,12 @@ impl AppStore {
         self.ensure_current_node_valid();
     }
 
-    /// Homepage ··· menu: `generated` or a stored complete sing-box archive.
+    /// Homepage ··· menu: `generated` or a stored complete custom config
+    /// (sing-box JSON / mihomo YAML / Xray JSON).
     pub fn set_runtime_source(&mut self, source: crate::domain::RuntimeSource) -> AppResult<()> {
         if let crate::domain::RuntimeSource::Singbox { id } = &source {
             let ok = self.subscriptions.iter().any(|s| {
-                s.id == *id && matches!(s.source, crate::domain::SubscriptionSource::Singbox { .. })
+                s.id == *id && matches!(s.source, crate::domain::SubscriptionSource::Custom { .. })
             });
             if !ok {
                 return Err(AppError::NotFound(id.clone()));
@@ -2382,6 +2383,7 @@ mod tests {
                     shadow_tls: None,
                 },
                 source: None,
+                raw: None,
                 latency_ms: None,
                 latency_at: None,
             },
@@ -2432,6 +2434,7 @@ mod tests {
                 shadow_tls: None,
             },
             source: None,
+            raw: None,
             latency_ms: None,
             latency_at: None,
         };
@@ -2551,6 +2554,7 @@ mod tests {
                     shadow_tls: None,
                 },
                 source: None,
+                raw: None,
                 latency_ms: None,
                 latency_at: None,
             },
@@ -2677,6 +2681,7 @@ mod tests {
                 shadow_tls: None,
             },
             source: None,
+            raw: None,
             latency_ms: None,
             latency_at: None,
         };
@@ -2984,6 +2989,7 @@ mod tests {
                     password: "x".into(),
                 },
                 source: None,
+                raw: None,
                 latency_ms: None,
                 latency_at: None,
             },
@@ -3019,10 +3025,11 @@ mod tests {
         assert!(store.enabled_node_ids_sorted().is_empty());
         assert_ne!(store.enabled_node_ids_sorted(), with_node);
 
-        // Singbox (custom config) subscriptions never contribute nodes.
+        // Custom (complete config) subscriptions never contribute nodes.
         store.subscriptions[0].enabled = true;
-        store.subscriptions[0].source = crate::domain::SubscriptionSource::Singbox {
+        store.subscriptions[0].source = crate::domain::SubscriptionSource::Custom {
             content: "{}".into(),
+            kind: crate::domain::CustomConfigKind::Singbox,
         };
         assert!(store.enabled_node_ids_sorted().is_empty());
     }
@@ -3780,6 +3787,7 @@ mod tests {
                 obfs_password: None,
             },
             source: None,
+            raw: None,
             latency_ms: None,
             latency_at: None,
         }
@@ -3878,10 +3886,11 @@ mod tests {
         let mut store = AppStore::default();
         let mut sub = sample_url_sub("s");
         sub.id = "sb1".into();
-        sub.source = crate::domain::SubscriptionSource::Singbox {
+        sub.source = crate::domain::SubscriptionSource::Custom {
             content:
                 r#"{"inbounds":[{"type":"mixed","listen_port":1}],"outbounds":[{"type":"direct"}]}"#
                     .into(),
+            kind: crate::domain::CustomConfigKind::Singbox,
         };
         store.upsert_subscription(sub, Vec::new()).unwrap();
         store
@@ -3915,6 +3924,7 @@ mod tests {
                     shadow_tls: None,
                 },
                 source: None,
+                raw: None,
                 latency_ms: None,
                 latency_at: None,
             },
@@ -4353,6 +4363,7 @@ mod tests {
                 shadow_tls: None,
             },
             source: None,
+            raw: None,
             latency_ms: None,
             latency_at: None,
         }
@@ -4522,6 +4533,7 @@ mod tests {
                 packet_encoding: "xudp".into(),
             },
             source: Some("clash".into()),
+            raw: None,
             latency_ms: None,
             latency_at: None,
         }

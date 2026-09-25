@@ -65,9 +65,6 @@ pub fn build_mihomo_config(
         }
         supported.push(node.clone());
     }
-    for reason in &skipped {
-        crate::app_log::warn("mihomo_config", format!("跳过节点 — {reason}"));
-    }
     if supported.is_empty() {
         return Err(AppError::Config(
             "no mihomo-compatible nodes (supports ss/vmess/vless(non-reality)/trojan/hysteria2/anytls/snell/masque/socks5/http)"
@@ -84,6 +81,62 @@ pub fn build_mihomo_config(
             format!("{renamed} 个节点 id 重复，已在生成时改写名称以避免校验失败"),
         );
     }
+
+    // —— emit proxy entries FIRST ——
+    // Raw bodies can still fail here (broken YAML, a `dialer-proxy` pointing
+    // at a name this config doesn't include), and a dropped node must vanish
+    // from every group / tag list below, not just the proxies list.
+    let mut entries: Vec<(&ProxyNode, Mapping)> = Vec::new();
+    for node in &supported {
+        match mihomo_proxy_mapping(node) {
+            Ok(mapping) => entries.push((node, mapping)),
+            Err(e) => skipped.push(format!("{}: {e}", node.name)),
+        }
+    }
+    // Provider-authored `dialer-proxy` references another proxy BY ITS
+    // ORIGINAL NAME; emission renamed every entry into the tag space, so
+    // rewrite the reference to the target's tag. A reference we cannot
+    // resolve would make mihomo reject the whole config — drop that node.
+    let raw_name_to_tag: std::collections::HashMap<String, String> = entries
+        .iter()
+        .filter(|(n, _)| n.raw.is_some())
+        .map(|(n, _)| (n.name.clone(), outbound_tag(n)))
+        .collect();
+    let mut proxies: Vec<Mapping> = Vec::new();
+    let mut emitted: Vec<ProxyNode> = Vec::new();
+    for (node, mut mapping) in entries {
+        let dialer = mapping
+            .get(str_yaml("dialer-proxy"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        if let Some(target) = dialer {
+            let own_tag = outbound_tag(node);
+            match raw_name_to_tag.get(&target) {
+                Some(tag) if tag != &own_tag => {
+                    mapping.insert(str_yaml("dialer-proxy"), str_yaml(tag));
+                }
+                _ => {
+                    skipped.push(format!(
+                        "{}: dialer-proxy 引用「{target}」不在本次生成中，已跳过该节点",
+                        node.name
+                    ));
+                    continue;
+                }
+            }
+        }
+        proxies.push(mapping);
+        emitted.push(node.clone());
+    }
+    for reason in &skipped {
+        crate::app_log::warn("mihomo_config", format!("跳过节点 — {reason}"));
+    }
+    if emitted.is_empty() {
+        return Err(AppError::Config(format!(
+            "no mihomo-compatible nodes: {}",
+            skipped.join("; ")
+        )));
+    }
+    let supported: Vec<ProxyNode> = emitted;
 
     let tags: Vec<String> = supported.iter().map(outbound_tag).collect();
     let selected_tag = resolve_selected_tag(&supported, &tags, opts.current_node_id.as_deref());
@@ -209,12 +262,7 @@ pub fn build_mihomo_config(
     }
     root.insert(
         str_yaml("proxies"),
-        Yaml::Sequence(
-            supported
-                .iter()
-                .map(|n| Yaml::Mapping(node_to_mihomo_proxy(n)))
-                .collect(),
-        ),
+        Yaml::Sequence(proxies.into_iter().map(Yaml::Mapping).collect()),
     );
     root.insert(
         str_yaml("proxy-groups"),
@@ -279,7 +327,13 @@ pub fn build_mihomo_sidecar_config(entries: &[(ProxyNode, u16)]) -> AppResult<Bu
         // Per-listener egress pin: everything sing-box hands to this port
         // egresses through exactly this node's proxy.
         listener.insert(str_yaml("proxy"), str_yaml(&tag));
-        proxies.push(Yaml::Mapping(node_to_mihomo_proxy(node)));
+        match mihomo_proxy_mapping(node) {
+            Ok(mapping) => proxies.push(Yaml::Mapping(mapping)),
+            Err(e) => {
+                skipped.push(format!("{}: {e}", node.name));
+                continue;
+            }
+        }
         listeners.push(Yaml::Mapping(listener));
         tags.push(tag);
     }
@@ -809,6 +863,36 @@ fn dns_pattern(matcher: DomainMatcher, payload: &str) -> Option<String> {
 
 /// Map one node to a Clash proxy mapping (field names mirror what our own
 /// `subscription::clash` parser reads — the authoritative inverse).
+/// Proxy entry for the generated config. A verbatim raw body (clash-parsed
+/// nodes carry one — see `ProxyNode::raw`) wins: mihomo parses its own
+/// dialect natively, so re-emitting the original entry is lossless, while
+/// rebuilding from the model is a sing-box-shaped projection that can drop
+/// provider params. The `name` key is rewritten into the app tag space
+/// (`node-<id16>`) — every group member, rule pin and Clash-API PUT
+/// addresses nodes by that tag.
+fn mihomo_proxy_mapping(node: &ProxyNode) -> AppResult<Mapping> {
+    if let Some(raw) = node.raw.as_deref() {
+        let value: serde_yaml::Value = serde_yaml::from_str(raw).map_err(|e| {
+            AppError::Config(format!("节点 {} 的原文条目不是合法 YAML：{e}", node.name))
+        })?;
+        let mut map = value
+            .as_mapping()
+            .cloned()
+            .ok_or_else(|| AppError::Config(format!("节点 {} 的原文条目不是映射", node.name)))?;
+        map.insert(str_yaml("name"), str_yaml(&outbound_tag(node)));
+        return Ok(map);
+    }
+    if matches!(node.protocol, Protocol::Unknown) {
+        // supports_node admits Unknown only with a raw body; a stale store
+        // without one must not hit the unreachable arm below.
+        return Err(AppError::Config(format!(
+            "节点 {} 为未建模类型且缺少原文，无法生成 mihomo 出站",
+            node.name
+        )));
+    }
+    Ok(node_to_mihomo_proxy(node))
+}
+
 fn node_to_mihomo_proxy(node: &ProxyNode) -> Mapping {
     let mut m = Mapping::new();
     m.insert(str_yaml("name"), str_yaml(&outbound_tag(node)));
@@ -1255,6 +1339,7 @@ mod tests {
                 packet_encoding: "xudp".into(),
             },
             source: None,
+            raw: None,
             latency_ms: None,
             latency_at: None,
         }
@@ -1291,6 +1376,7 @@ mod tests {
                 shadow_tls: None,
             },
             source: None,
+            raw: None,
             latency_ms: None,
             latency_at: None,
         }
@@ -1330,6 +1416,184 @@ mod tests {
 
     fn parse(built: &BuiltMihomoConfig) -> serde_yaml::Value {
         serde_yaml::from_str(&built.yaml).expect("generated yaml parses")
+    }
+
+    fn raw_node(name: &str, protocol: Protocol, config: ProtocolConfig, raw: &str) -> ProxyNode {
+        ProxyNode {
+            id: String::new(),
+            name: name.into(),
+            protocol,
+            server: "example.com".into(),
+            port: 443,
+            tls: None,
+            transport: None,
+            udp: None,
+            config,
+            source: None,
+            raw: Some(raw.to_string()),
+            latency_ms: None,
+            latency_at: None,
+        }
+        .with_computed_id()
+    }
+
+    fn proxies_of(doc: &serde_yaml::Value) -> Vec<serde_yaml::Value> {
+        doc["proxies"].as_sequence().expect("proxies").clone()
+    }
+
+    fn group_members(doc: &serde_yaml::Value) -> Vec<String> {
+        doc["proxy-groups"][0]["proxies"]
+            .as_sequence()
+            .expect("main group members")
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect()
+    }
+
+    #[test]
+    fn raw_entries_emit_verbatim_with_tag_names() {
+        // Provider params the model never modeled (smux / ip-version) must
+        // survive generation when a raw body exists.
+        let raw_body = "name: 原名
+type: vmess
+server: vm.example.com
+port: 443
+uuid: 42
+cipher: auto
+smux:
+  enabled: true
+ip-version: ipv4
+";
+        let nodes = vec![raw_node(
+            "原名",
+            Protocol::Vmess,
+            ProtocolConfig::Vmess {
+                uuid: "42".into(),
+                alter_id: 0,
+                security: "auto".into(),
+            },
+            raw_body,
+        )];
+        let built = build_mihomo_config(&nodes, &default_opts()).expect("build");
+        let doc = parse(&built);
+        let proxies = proxies_of(&doc);
+        assert_eq!(proxies.len(), 1);
+        let p = &proxies[0];
+        // Name rewritten into the app tag space; everything else verbatim.
+        assert_eq!(p["name"].as_str(), Some(built.outbound_tags[0].as_str()));
+        assert!(p["name"].as_str() != Some("原名"));
+        assert_eq!(p["type"].as_str(), Some("vmess"));
+        assert_eq!(p["smux"]["enabled"].as_bool(), Some(true));
+        assert_eq!(p["ip-version"].as_str(), Some("ipv4"));
+        // Main group references the tag, not the original name.
+        assert!(group_members(&doc).contains(&built.outbound_tags[0]));
+    }
+
+    #[test]
+    fn unknown_raw_nodes_emit_in_mihomo_mode() {
+        let raw_body = "name: SSR-A
+type: ssr
+server: s.example.com
+port: 443
+cipher: aes-256-cfb
+password: x
+protocol: auth_aes128_md5
+";
+        let nodes = vec![raw_node(
+            "SSR-A",
+            Protocol::Unknown,
+            ProtocolConfig::Unknown,
+            raw_body,
+        )];
+        let built = build_mihomo_config(&nodes, &default_opts()).expect("build");
+        let doc = parse(&built);
+        let proxies = proxies_of(&doc);
+        assert_eq!(proxies.len(), 1);
+        assert_eq!(proxies[0]["type"].as_str(), Some("ssr"));
+        assert_eq!(proxies[0]["protocol"].as_str(), Some("auth_aes128_md5"));
+        assert!(group_members(&doc).contains(&built.outbound_tags[0]));
+    }
+
+    #[test]
+    fn dialer_proxy_references_are_rewritten_or_dropped() {
+        // Front proxy dials through the entry node (by ORIGINAL name).
+        let front = "name: 前置
+type: ss
+server: f.example.com
+port: 8388
+cipher: aes-256-gcm
+password: x
+dialer-proxy: 后置
+";
+        let back = "name: 后置
+type: trojan
+server: b.example.com
+port: 443
+password: t
+";
+        let nodes = vec![
+            raw_node(
+                "前置",
+                Protocol::Shadowsocks,
+                ProtocolConfig::Shadowsocks {
+                    method: "aes-256-gcm".into(),
+                    password: "x".into(),
+                    plugin: None,
+                    plugin_opts: None,
+                    shadow_tls: None,
+                },
+                front,
+            ),
+            raw_node(
+                "后置",
+                Protocol::Trojan,
+                ProtocolConfig::Trojan {
+                    password: "t".into(),
+                },
+                back,
+            ),
+            raw_node(
+                "孤儿",
+                Protocol::Trojan,
+                ProtocolConfig::Trojan {
+                    password: "t".into(),
+                },
+                "name: 孤儿
+type: trojan
+server: o.example.com
+port: 443
+password: t
+dialer-proxy: 不存在的节点
+",
+            ),
+        ];
+        let built = build_mihomo_config(&nodes, &default_opts()).expect("build");
+        let doc = parse(&built);
+        let proxies = proxies_of(&doc);
+        // The orphan (unresolvable dialer-proxy) is dropped; the other two
+        // survive, and the front's dialer-proxy points at the back's TAG.
+        assert_eq!(proxies.len(), 2, "orphan dropped");
+        assert_eq!(built.outbound_tags.len(), 2);
+        let back_tag = built
+            .outbound_tags
+            .iter()
+            .find(|t| {
+                proxies.iter().any(|p| {
+                    p["name"].as_str() == Some(t.as_str())
+                        && p["type"].as_str() == Some("trojan")
+                        && p["server"].as_str() == Some("b.example.com")
+                })
+            })
+            .expect("back tag");
+        let front_entry = proxies
+            .iter()
+            .find(|p| p["server"].as_str() == Some("f.example.com"))
+            .expect("front entry");
+        assert_eq!(
+            front_entry["dialer-proxy"].as_str(),
+            Some(back_tag.as_str())
+        );
+        assert!(!group_members(&doc).iter().any(|m| m == "孤儿"));
     }
 
     fn rules_of(doc: &serde_yaml::Value) -> Vec<String> {

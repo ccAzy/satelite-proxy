@@ -744,7 +744,7 @@ export function NodesPage() {
             >
               {t("nodes.ctxDetails")}
             </button>
-            {!customRuntime && (
+            {!customRuntime && n.protocol !== "unknown" && (
               <button
                 type="button"
                 role="menuitem"

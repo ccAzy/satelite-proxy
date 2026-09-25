@@ -38,6 +38,14 @@ pub struct ListedNode {
     pub favorite: bool,
 }
 
+/// Strip the verbatim raw body before flattening a node onto the wire —
+/// listings would otherwise carry hundreds of KB of YAML the UI never uses
+/// (generation reads the store directly, not the wire copy).
+fn wire_node(mut node: ProxyNode) -> ProxyNode {
+    node.raw = None;
+    node
+}
+
 #[derive(Debug, Serialize)]
 pub struct NodePage {
     pub nodes: Vec<ListedNode>,
@@ -488,12 +496,19 @@ pub fn get_node_draft(
 ) -> Result<crate::domain::ManualNodeDraft, String> {
     state
         .with_store(|store| {
-            store
+            let stored = store
                 .nodes
                 .iter()
                 .find(|n| n.node.id == id)
-                .map(|n| crate::subscription::node_to_draft(&n.node))
-                .ok_or_else(|| AppError::NotFound(id.clone()))
+                .ok_or_else(|| AppError::NotFound(id.clone()))?;
+            // Raw-passthrough nodes have no modeled fields to edit; the UI
+            // hides the entry, this guards a stale menu.
+            if matches!(stored.node.protocol, crate::domain::Protocol::Unknown) {
+                return Err(AppError::Config(
+                    "该节点为未建模类型（原文透传），暂不支持编辑".into(),
+                ));
+            }
+            Ok(crate::subscription::node_to_draft(&stored.node))
         })
         .map_err(|e| e.to_string())
 }
@@ -511,6 +526,16 @@ pub fn update_node(
 ) -> Result<ProxyNode, String> {
     let (node, node_set_changed) = state
         .with_store_mut(|store| {
+            if store
+                .nodes
+                .iter()
+                .find(|n| n.node.id == id)
+                .is_some_and(|n| matches!(n.node.protocol, crate::domain::Protocol::Unknown))
+            {
+                return Err(AppError::Config(
+                    "该节点为未建模类型（原文透传），暂不支持编辑".into(),
+                ));
+            }
             let ids_before = store.enabled_node_ids_sorted();
             let node = store.update_node_from_draft(&id, &draft)?;
             Ok((node, ids_before != store.enabled_node_ids_sorted()))
@@ -546,7 +571,7 @@ pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, Str
                 .filter(|n| enabled.contains(n.subscription_id.as_str()))
                 .filter(|n| core_kind.supports_node(&n.node))
                 .map(|n| ListedNode {
-                    node: n.node.clone(),
+                    node: wire_node(n.node.clone()),
                     latency_method: n.latency_method.clone(),
                     subscription_id: n.subscription_id.clone(),
                     subscription_name: names
@@ -619,7 +644,7 @@ pub fn list_nodes_page(
                             .is_some_and(|name| name.to_lowercase().contains(&query))
                 })
                 .map(|n| ListedNode {
-                    node: n.node.clone(),
+                    node: wire_node(n.node.clone()),
                     latency_method: n.latency_method.clone(),
                     subscription_id: n.subscription_id.clone(),
                     subscription_name: names
@@ -683,7 +708,7 @@ pub fn list_node_ids(
                             .is_some_and(|name| name.to_lowercase().contains(&query))
                 })
                 .map(|n| ListedNode {
-                    node: n.node.clone(),
+                    node: wire_node(n.node.clone()),
                     latency_method: n.latency_method.clone(),
                     subscription_id: n.subscription_id.clone(),
                     subscription_name: names
@@ -699,18 +724,25 @@ pub fn list_node_ids(
         .map_err(|e| e.to_string())
 }
 
-/// Nodes extracted read-only from a stored custom sing-box config body.
-/// A config whose outbounds are all groups (selector / urltest / direct / …)
-/// is valid but has nothing to show — returns an empty list, not an error.
+/// Read-only node list extracted from the selected custom config body.
+/// Custom profiles never feed the node store, so the stored config body is
+/// parsed on demand. sing-box and mihomo bodies map to their parsers; Xray
+/// configs have no app-side parser, so they show no nodes (an empty list,
+/// not an error — the config still runs).
 fn extract_custom_nodes(
     content: &str,
+    kind: crate::domain::CustomConfigKind,
     sub_id: &str,
     sub_name: &str,
 ) -> Result<Vec<ListedNode>, String> {
-    match parse_singbox_json(content) {
-        Ok(parsed) => Ok(parsed
+    let build = |parsed: crate::domain::ParseResult| {
+        parsed
             .nodes
             .into_iter()
+            .map(|mut node| {
+                node.raw = None;
+                node
+            })
             .map(|node| ListedNode {
                 node,
                 // Session-only nodes parsed from a raw config body — never
@@ -723,9 +755,21 @@ fn extract_custom_nodes(
                 // access here and no id they could match in `favorite_nodes`.
                 favorite: false,
             })
-            .collect()),
-        Err(AppError::NoProxies) => Ok(Vec::new()),
-        Err(e) => Err(e.to_string()),
+            .collect()
+    };
+    match kind {
+        crate::domain::CustomConfigKind::Singbox => match parse_singbox_json(content) {
+            Ok(parsed) => Ok(build(parsed)),
+            Err(AppError::NoProxies) => Ok(Vec::new()),
+            Err(e) => Err(e.to_string()),
+        },
+        crate::domain::CustomConfigKind::Mihomo => {
+            match crate::subscription::parse_clash_yaml(content) {
+                Ok(parsed) => Ok(build(parsed)),
+                Err(_) => Ok(Vec::new()),
+            }
+        }
+        crate::domain::CustomConfigKind::Xray => Ok(Vec::new()),
     }
 }
 
@@ -766,8 +810,8 @@ pub(crate) fn custom_config_nodes(state: &AppState) -> Result<Vec<ListedNode>, S
                     .iter()
                     .find(|s| s.id == id)
                     .and_then(|s| match &s.source {
-                        SubscriptionSource::Singbox { content } => {
-                            Some((s.id.clone(), s.name.clone(), content.clone()))
+                        SubscriptionSource::Custom { content, kind } => {
+                            Some((s.id.clone(), s.name.clone(), content.clone(), *kind))
                         }
                         _ => None,
                     }),
@@ -777,8 +821,8 @@ pub(crate) fn custom_config_nodes(state: &AppState) -> Result<Vec<ListedNode>, S
         .map_err(|e| e.to_string())?;
 
     match custom {
-        Some((id, name, content)) => {
-            let mut nodes = extract_custom_nodes(&content, &id, &name)?;
+        Some((id, name, content, kind)) => {
+            let mut nodes = extract_custom_nodes(&content, kind, &id, &name)?;
             restore_generated_tag_names(&mut nodes, &tag_names);
             Ok(nodes)
         }
@@ -1052,7 +1096,13 @@ mod tests {
 
     #[test]
     fn extract_custom_nodes_maps_outbounds() {
-        let nodes = extract_custom_nodes(SAMPLE, "sub1", "My Config").unwrap();
+        let nodes = extract_custom_nodes(
+            SAMPLE,
+            crate::domain::CustomConfigKind::Singbox,
+            "sub1",
+            "My Config",
+        )
+        .unwrap();
         assert_eq!(nodes.len(), 2);
         assert!(nodes.iter().all(|n| n.subscription_id == "sub1"));
         assert!(nodes.iter().all(|n| n.subscription_name == "My Config"));
@@ -1069,14 +1119,25 @@ mod tests {
                 {"type": "direct", "tag": "direct"}
             ]
         }"#;
-        assert!(extract_custom_nodes(content, "sub1", "x")
-            .unwrap()
-            .is_empty());
+        assert!(extract_custom_nodes(
+            content,
+            crate::domain::CustomConfigKind::Singbox,
+            "sub1",
+            "x"
+        )
+        .unwrap()
+        .is_empty());
     }
 
     #[test]
     fn extract_custom_nodes_invalid_json_errors() {
-        assert!(extract_custom_nodes("{ not json", "sub1", "x").is_err());
+        assert!(extract_custom_nodes(
+            "{ not json",
+            crate::domain::CustomConfigKind::Singbox,
+            "sub1",
+            "x"
+        )
+        .is_err());
     }
 
     #[test]
@@ -1100,7 +1161,13 @@ mod tests {
                 ]
             }}"#
         );
-        let mut nodes = extract_custom_nodes(&content, "sub1", "My Config").unwrap();
+        let mut nodes = extract_custom_nodes(
+            &content,
+            crate::domain::CustomConfigKind::Singbox,
+            "sub1",
+            "My Config",
+        )
+        .unwrap();
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].node.name, tag);
 
@@ -1121,7 +1188,13 @@ mod tests {
                  "server_port": 8388, "method": "aes-128-gcm", "password": "pw"}
             ]
         }"#;
-        let mut nodes = extract_custom_nodes(content, "sub1", "x").unwrap();
+        let mut nodes = extract_custom_nodes(
+            content,
+            crate::domain::CustomConfigKind::Singbox,
+            "sub1",
+            "x",
+        )
+        .unwrap();
         let mut map = HashMap::new();
         map.insert("0011aabbccddeeff".to_string(), "其他节点".to_string());
         restore_generated_tag_names(&mut nodes, &map);

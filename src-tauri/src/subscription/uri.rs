@@ -134,6 +134,7 @@ fn parse_http_uri(line: &str) -> Result<ProxyNode, String> {
             path: query.get("path").cloned(),
         },
         source: Some(url.scheme().into()),
+        raw: None,
         latency_ms: None,
         latency_at: None,
     })
@@ -177,6 +178,7 @@ fn parse_hysteria_uri(line: &str) -> Result<ProxyNode, String> {
             obfs: query.get("obfs").cloned(),
         },
         source: Some(url.scheme().into()),
+        raw: None,
         latency_ms: None,
         latency_at: None,
     })
@@ -205,6 +207,7 @@ fn parse_shadowtls_uri(line: &str) -> Result<ProxyNode, String> {
         udp: Some(false),
         config: ProtocolConfig::ShadowTls { version, password },
         source: Some(url.scheme().into()),
+        raw: None,
         latency_ms: None,
         latency_at: None,
     })
@@ -245,6 +248,7 @@ fn parse_ssh_uri(line: &str) -> Result<ProxyNode, String> {
             host_key: Vec::new(),
         },
         source: Some(url.scheme().into()),
+        raw: None,
         latency_ms: None,
         latency_at: None,
     })
@@ -282,6 +286,7 @@ fn parse_naive_uri(line: &str) -> Result<ProxyNode, String> {
             quic,
         },
         source: Some(url.scheme().into()),
+        raw: None,
         latency_ms: None,
         latency_at: None,
     })
@@ -319,6 +324,7 @@ fn parse_tor_uri(line: &str) -> Result<ProxyNode, String> {
             data_directory: query.get("data_directory").cloned(),
         },
         source: Some(url.scheme().into()),
+        raw: None,
         latency_ms: None,
         latency_at: None,
     })
@@ -404,6 +410,7 @@ fn parse_ss_uri(line: &str) -> Result<ProxyNode, String> {
             shadow_tls: None,
         },
         source: Some("ss".into()),
+        raw: None,
         latency_ms: None,
         latency_at: None,
     })
@@ -551,6 +558,7 @@ fn parse_vmess_uri(line: &str) -> Result<ProxyNode, String> {
             security,
         },
         source: Some("vmess".into()),
+        raw: None,
         latency_ms: None,
         latency_at: None,
     })
@@ -667,6 +675,7 @@ fn parse_vless_uri(line: &str) -> Result<ProxyNode, String> {
             packet_encoding: "xudp".into(),
         },
         source: Some("vless".into()),
+        raw: None,
         latency_ms: None,
         latency_at: None,
     })
@@ -765,6 +774,7 @@ fn parse_trojan_uri(line: &str) -> Result<ProxyNode, String> {
         udp: None,
         config: ProtocolConfig::Trojan { password },
         source: Some("trojan".into()),
+        raw: None,
         latency_ms: None,
         latency_at: None,
     })
@@ -842,6 +852,7 @@ fn parse_snell_uri(line: &str) -> Result<ProxyNode, String> {
             mode,
         },
         source: Some("snell".into()),
+        raw: None,
         latency_ms: None,
         latency_at: None,
     })
@@ -902,6 +913,7 @@ fn parse_anytls_uri(line: &str) -> Result<ProxyNode, String> {
         udp: None,
         config: ProtocolConfig::AnyTls { password },
         source: Some("anytls".into()),
+        raw: None,
         latency_ms: None,
         latency_at: None,
     })
@@ -972,6 +984,7 @@ fn parse_hysteria2_uri(line: &str) -> Result<ProxyNode, String> {
                 .cloned(),
         },
         source: Some("hysteria2".into()),
+        raw: None,
         latency_ms: None,
         latency_at: None,
     })
@@ -1039,6 +1052,7 @@ fn parse_tuic_uri(line: &str) -> Result<ProxyNode, String> {
                 .unwrap_or(false),
         },
         source: Some("tuic".into()),
+        raw: None,
         latency_ms: None,
         latency_at: None,
     })
@@ -1072,6 +1086,7 @@ fn parse_socks_uri(line: &str) -> Result<ProxyNode, String> {
         udp: None,
         config: ProtocolConfig::Socks5 { username, password },
         source: Some("socks5".into()),
+        raw: None,
         latency_ms: None,
         latency_at: None,
     })

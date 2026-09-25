@@ -1,11 +1,12 @@
 use crate::domain::ManualNodeDraft;
 use crate::domain::{
-    ParseResult, ProxyNode, Subscription, SubscriptionFormat, SubscriptionSource,
+    CustomConfigKind, ParseResult, ProxyNode, Subscription, SubscriptionFormat, SubscriptionSource,
     SubscriptionTraffic,
 };
 use crate::error::{AppError, AppResult};
 use crate::subscription::{
-    parse_manual_draft, parse_single_uri, parse_subscription, validate_complete_singbox_config,
+    detect_custom_config_kind, parse_manual_draft, parse_single_uri, parse_subscription,
+    validate_complete_singbox_config, validate_custom_mihomo_config, validate_custom_xray_config,
 };
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -38,6 +39,10 @@ pub struct ImportOutcome {
     /// Nodes the parser could not import, with reasons — surfaced to the UI
     /// so the user can report unsupported protocols/transports to the dev.
     pub skipped: Vec<crate::domain::SkippedProxy>,
+    /// Verbatim config body as fetched / pasted, persisted to
+    /// `<data>/subscriptions/<id>.txt` for the "view raw config" modal.
+    /// URL subscriptions would otherwise discard the body after parsing.
+    pub raw_body: Option<String>,
 }
 
 /// `via_proxy`: fetch through local mixed HTTP proxy (127.0.0.1:mixed_port).
@@ -132,6 +137,7 @@ pub async fn import_from_url_with_id(
         .or(disposition_name)
         .unwrap_or_else(|| name_from_url(&url));
     let content = String::from_utf8_lossy(&bytes).into_owned();
+    let raw_body = content.clone();
     let mut outcome = tokio::task::spawn_blocking(move || -> AppResult<ImportOutcome> {
         let body_traffic = parse_userinfo_from_content(&content);
         let parsed = parse_subscription(&content)?;
@@ -154,6 +160,7 @@ pub async fn import_from_url_with_id(
     // Priority: HTTP header > body comment > remark node names
     outcome.subscription.traffic =
         SubscriptionTraffic::merge(traffic, outcome.subscription.traffic);
+    outcome.raw_body = Some(raw_body);
     Ok(outcome)
 }
 
@@ -736,6 +743,7 @@ mod tests {
                 shadow_tls: None,
             },
             source: None,
+            raw: None,
             latency_ms: None,
             latency_at: None,
         };
@@ -785,6 +793,7 @@ mod tests {
                 shadow_tls: None,
             },
             source: None,
+            raw: None,
             latency_ms: None,
             latency_at: None,
         };
@@ -984,6 +993,7 @@ proxies:
                 packet_encoding: "xudp".into(),
             },
             source: None,
+            raw: None,
             latency_ms: None,
             latency_at: None,
         };
@@ -1106,30 +1116,48 @@ pub fn import_from_text(
         existing_id,
     )?;
     outcome.subscription.auto_update = false;
+    outcome.raw_body = Some(content);
     Ok(outcome)
 }
 
-pub fn import_from_singbox(
+/// Import a complete custom config ("自定义配置"). The kernel type is
+/// detected from the body (sing-box JSON / mihomo Clash YAML / Xray JSON) and
+/// validated per kind; the profile is later launched as-is with the matching
+/// core — nothing is generated from it.
+pub fn import_from_custom(
     name: Option<String>,
     content: String,
     existing_id: Option<String>,
 ) -> AppResult<ImportOutcome> {
-    let normalized = validate_complete_singbox_config(&content)?;
+    let kind = detect_custom_config_kind(&content)?;
+    let normalized = match kind {
+        CustomConfigKind::Singbox => validate_complete_singbox_config(&content)?,
+        CustomConfigKind::Mihomo => validate_custom_mihomo_config(&content)?,
+        CustomConfigKind::Xray => validate_custom_xray_config(&content)?,
+    };
     let display_name = name
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "sing-box".into());
-    let source = SubscriptionSource::Singbox {
-        content: normalized,
+        .unwrap_or_else(|| match kind {
+            CustomConfigKind::Singbox => "sing-box".into(),
+            CustomConfigKind::Mihomo => "mihomo".into(),
+            CustomConfigKind::Xray => "Xray".into(),
+        });
+    let source = SubscriptionSource::Custom {
+        content: normalized.clone(),
+        kind,
     };
     let parsed = crate::domain::ParseResult {
         nodes: Vec::new(),
         skipped: Vec::new(),
-        format: crate::domain::SubscriptionFormat::SingboxJson,
+        format: crate::domain::SubscriptionFormat::Manual,
     };
     let mut outcome = build_outcome(display_name, source, parsed, existing_id, false);
     outcome.subscription.auto_update = false;
     outcome.subscription.enabled = false;
+    // The stored `format` doubles as the card's type tag for custom profiles.
+    outcome.subscription.format = Some(kind.as_str().to_string());
+    outcome.raw_body = Some(normalized);
     Ok(outcome)
 }
 
@@ -1266,6 +1294,7 @@ fn build_outcome(
         subscription,
         nodes,
         skipped: parsed.skipped,
+        raw_body: None,
     }
 }
 
@@ -1315,8 +1344,10 @@ pub(crate) fn subscription_id(source: &SubscriptionSource) -> String {
                 );
             }
         }
-        SubscriptionSource::Singbox { content } => {
-            hasher.update(b"singbox|");
+        SubscriptionSource::Custom { content, kind } => {
+            hasher.update(b"custom|");
+            hasher.update(kind.as_str().as_bytes());
+            hasher.update(b"|");
             hasher.update(content.as_bytes());
         }
     }
@@ -1387,7 +1418,7 @@ fn name_from_url(url: &str) -> String {
         .unwrap_or_else(|| "Subscription".into())
 }
 
-fn format_label(f: SubscriptionFormat) -> String {
+pub(crate) fn format_label(f: SubscriptionFormat) -> String {
     match f {
         SubscriptionFormat::ClashYaml => "clash_yaml".into(),
         SubscriptionFormat::UriList => "uri_list".into(),

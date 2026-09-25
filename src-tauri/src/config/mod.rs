@@ -13,15 +13,15 @@ pub use builder::{
     outbound_tag, rule_set_is_empty_for_config, BuildOptions, SidecarPlan, SidecarPort,
     DIAG_INBOUND_PORT, DIAG_SELECTOR_TAG,
 };
-pub use custom::inspect_singbox_config;
+pub use custom::{inspect_mihomo_config, inspect_singbox_config, inspect_xray_config};
 pub use dns_build::lookup_hosts;
 pub use dns_files::dump_dns_rules_file;
 pub use mihomo::{build_mihomo_config, build_mihomo_sidecar_config};
 pub use punycode::to_ascii_domain;
 pub use rule_files::{dump_rule_set_files, remove_rule_set_files};
 pub use write::{
-    active_config_path, active_yaml_config_path, remove_custom_config, write_active_config,
-    write_active_yaml_config, write_custom_config, write_mihomo_sidecar_config,
-    write_xray_sidecar_config,
+    active_config_path, active_yaml_config_path, raw_subscription_path, remove_custom_config,
+    remove_raw_subscription, write_active_config, write_active_yaml_config, write_custom_config,
+    write_mihomo_sidecar_config, write_raw_subscription, write_xray_sidecar_config,
 };
 pub use xray::{build_xray_config, build_xray_sidecar_config};

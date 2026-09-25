@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  addSubscriptionCustom,
   addSubscriptionFile,
   addSubscriptionNode,
-  addSubscriptionSingbox,
   addSubscriptionText,
   addSubscriptionUrl,
   getProxyStatus,
@@ -347,8 +347,8 @@ export function SimpleServersPage() {
         );
       } else if (payload.kind === "text") {
         await addSubscriptionText(payload.name || null, payload.content ?? "");
-      } else if (payload.kind === "singbox") {
-        await addSubscriptionSingbox(
+      } else if (payload.kind === "custom") {
+        await addSubscriptionCustom(
           payload.name || null,
           payload.content ?? "",
           null,
